@@ -1,0 +1,28 @@
+{
+    "name": "OpenSSL Test Environment",
+    "image": "fedora:41",
+    "features": {
+        "ghcr.io/devcontainers/features/common-utils:2": {
+            "installZsh": true,
+            "installOhMyZsh": true,
+            "username": "vscode",
+            "upgradePackages": true
+        }
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "timonwong.shellcheck",
+                "mads-hartmann.bash-ide-vscode",
+                "foxundermoon.shell-format"
+            ],
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "zsh"
+            }
+        }
+    },
+    "runArgs": [
+        "--privileged"
+    ],
+    "postCreateCommand": "dnf install -y openssl openssl-devel tcpdump net-tools wireshark-cli ShellCheck"
+}

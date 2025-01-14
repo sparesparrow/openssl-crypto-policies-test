@@ -1,0 +1,13 @@
+# Work directory
+work/
+*.pem
+*.pcap
+*.log
+
+# VS Code
+.vscode/settings.json
+.history/
+
+# OS files
+.DS_Store
+Thumbs.db

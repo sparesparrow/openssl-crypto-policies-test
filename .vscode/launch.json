@@ -1,0 +1,29 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "bashdb",
+            "request": "launch",
+            "name": "Debug Test Script",
+            "program": "${workspaceFolder}/test.sh",
+            "args": [],
+            "env": {
+                "BASH_DEBUG": "1"
+            },
+            "terminalKind": "integrated",
+            "sudo": true
+        },
+        {
+            "type": "bashdb",
+            "request": "launch",
+            "name": "Debug Setup Script",
+            "program": "${workspaceFolder}/setup.sh",
+            "args": [],
+            "env": {
+                "BASH_DEBUG": "1"
+            },
+            "terminalKind": "integrated",
+            "sudo": true  
+        }
+    ]
+}
