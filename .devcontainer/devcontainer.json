@@ -3,8 +3,8 @@
     "image": "fedora:41",
     "features": {
         "ghcr.io/devcontainers/features/common-utils:2": {
-            "installZsh": true,
-            "installOhMyZsh": true,
+            "installZsh": false,
+            "installOhMyZsh": false,
             "username": "vscode",
             "upgradePackages": true
         }
@@ -17,12 +17,15 @@
                 "foxundermoon.shell-format"
             ],
             "settings": {
-                "terminal.integrated.defaultProfile.linux": "zsh"
+                "terminal.integrated.defaultProfile.linux": "bash"
             }
         }
     },
     "runArgs": [
-        "--privileged"
+        "--privileged",
+        "--cap-add=SYS_PTRACE",
+        "--security-opt",
+        "seccomp=unconfined"
     ],
-    "postCreateCommand": "dnf install -y openssl openssl-devel tcpdump net-tools wireshark-cli ShellCheck"
+    "postCreateCommand": "dnf install -y openssl openssl-devel tcpdump net-tools wireshark-cli ShellCheck update-crypto-policies"
 }

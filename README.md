@@ -76,56 +76,10 @@ The repository includes CI/CD pipeline that:
 │   ├── launch.json          # Debug configurations
 │   ├── settings.json        # VS Code workspace settings 
 │   └── tasks.json          # VS Code tasks
-├── setup.sh                # Test environment setup script
+├── testplan.txt            # Test environment design
 ├── test.sh                 # Main test script 
 └── README.md              # This file 
 ```
+[./testplan.txt.md](./testplan.txt.md)
 
-## Adding New Tests
-1. Add test function to test.sh
-2. Update documentation if needed
-3. Run shellcheck to ensure code quality  
-4. Test in development container
-5. Submit pull request
 
-## Contributing
-1. Fork the repository
-2. Create feature branch  
-3. Commit changes
-4. Push to branch
-5. Create pull request 
-
-This setup provides a complete development environment with:
-
-1. Development Container:
-- Based on Fedora 41
-- Includes all required tools
-- Configured with helpful VS Code extensions
-- Runs with privileged access for network configuration
-
-2. VS Code Integration:  
-- Custom tasks for common operations
-- Debug configurations
-- Shell script linting
-- Formatted saving  
-- Helpful workspace settings
-
-3. GitHub Actions:
-- Automated testing on Fedora 41  
-- Shell script linting
-- Test artifact collection
-- Runs on every push and pull request
-
-4. Developer Experience:
-- One-click container setup  
-- Integrated debugging
-- Easy test execution  
-- Packet capture analysis
-- Code quality checks
-
-Key features:
-1. Easy setup: Just open in VS Code with Dev Containers 
-2. Integrated testing: Run tests directly from VS Code
-3. Debugging support: Built-in configurations
-4. Code quality: Automatic linting and formatting
-5. CI/CD: Automated testing and artifact collection
