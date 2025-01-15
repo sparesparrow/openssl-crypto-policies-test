@@ -14,7 +14,7 @@ declare -r HND_SERVER_HELLO=2 # Rejected at ServerHello
 declare -r HND_CIPHER_SPEC=3  # Rejected at ChangeCipherSpec (TLS 1.2)
 
 # TLS version constants
-export declare -A TLS_VERSIONS=(
+declare -r -A TLS_VERSIONS=(
     ["SSL3"]="0x0300"
     ["TLS1.0"]="0x0301"
     ["TLS1.1"]="0x0302"
@@ -60,25 +60,30 @@ EOF
     exit 1
 }
 
+
 process_args() {
-    OPTS=$(getopt -o lh --long list,help -n "$0" -- "$@")
-    if ! getopt -o lh --long list,help -n "$0" -- "$@" >/dev/null; then 
+    local OPTS
+    if ! OPTS=$(getopt -o lh --long list,help -n "$0" -- "$@"); then 
         usage
     fi
     eval set -- "$OPTS"
     
     while true; do
         case "$1" in
-        -l | --list)
-            list_tests
-            exit 0
-            ;;
-        -h | --help) usage ;;
-        --)
-            shift
-            break
-            ;;
-        *) error "Internal error!" ;;
+            -l|--list)
+                list_tests
+                exit 0
+                ;;
+            -h|--help)
+                usage
+                ;;
+            --)
+                shift
+                break
+                ;;
+            *)
+                error "Internal error!"
+                ;;
         esac
     done
 }
@@ -96,19 +101,17 @@ monitor_handshake() {
     local current_state=$HND_CLIENT_HELLO
     local final_state=$HND_CLIENT_HELLO
     
-    # Use hexdump for more reliable packet reading
-    
-    hexdump -C "$packet_file" | while read -r line; do
-        # Look for TLS record layer (0x16)
-        if [[ $line =~ "16 03" ]]; then
-            # Extract handshake type from the 6th byte after record header
+    while IFS= read -r line; do
+        if [[ $line =~ 16[[:space:]]03 ]]; then
             local handshake_type
             handshake_type=$(echo "$line" | awk '{print $6}')
             # ... rest of function ...
         fi
-    done
-    return $final_state
+    done < <(hexdump -C "$packet_file")
+    
+    return "$final_state"
 }
+
 
 # Environment setup
 setup() {
@@ -299,12 +302,12 @@ main() {
         fi
     fi
 
+
     # Print results
-    echo -e "\nTest Results:"
-    echo "=============="
+    printf "\nTest Results:\n"
+    printf "==============\n"
     for test in "${!TEST_RESULTS[@]}"; do
         printf "%-70s %s\n" "$test" "${TEST_RESULTS[$test]}"
     done
 }
-
 main "$@"
