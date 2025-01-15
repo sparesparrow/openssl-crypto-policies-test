@@ -101,64 +101,83 @@ process_args() {
 
 process_certificate() {
     local curve="$1"
+    log "DEBUG" "Processing certificate with curve: $curve"
+    
     if [[ "$profile" == "DEFAULT" && "$curve" =~ (secp192r1|secp224r1) ]]; then
         # For DEFAULT profile, reject weak elliptic curves
         log "INFO" "Rejecting weak elliptic curve $curve"
         return 1
     fi
+    log "DEBUG" "Certificate curve $curve accepted"
+    return 0
 }
 
 monitor_handshake() {
     local packet_file="$1"
+    log "DEBUG" "Monitoring handshake from packet file: $packet_file"
+    
     local current_state=$HND_CLIENT_HELLO
     local final_state=$HND_CLIENT_HELLO
+    
+    log "DEBUG" "Initial handshake state: $current_state"
     
     while IFS= read -r line; do
         if [[ $line =~ 16[[:space:]]03 ]]; then
             local handshake_type
             handshake_type=$(echo "$line" | awk '{print $6}')
-            current_state=$handshake_type  # Example usage
-            final_state=$current_state     # Example usage
+            log "DEBUG" "Found handshake message type: $handshake_type"
+            current_state=$handshake_type
+            final_state=$current_state
         fi
     done < <(hexdump -C "$packet_file")
     
+    log "DEBUG" "Final handshake state: $final_state"
     return "$final_state"
 }
 
-# Add missing validate_dh_params function
 validate_dh_params() {
     local dh_file="$1"
     local profile="$2"
+    log "DEBUG" "Validating DH parameters from file: $dh_file with profile: $profile"
     
     # Get DH parameter size
     local dh_size
     dh_size=$(openssl dhparam -in "$dh_file" -text 2>/dev/null | grep "P:" | wc -c)
+    log "DEBUG" "DH parameter size: $dh_size bits"
     
     # Check size requirements based on profile
     if [[ "$profile" == "DEFAULT" && "$dh_size" -lt 2048 ]]; then
+        log "INFO" "DH parameters too weak for DEFAULT profile: $dh_size bits"
         return 1
     elif [[ "$profile" == "LEGACY" && "$dh_size" -lt 1024 ]]; then
+        log "INFO" "DH parameters too weak for LEGACY profile: $dh_size bits"
         return 1
     fi
     
+    log "DEBUG" "DH parameters validation passed"
     return 0
 }
 
 validate_certificate() {
     local cert_file="$1"
     local profile="$2"
+    log "DEBUG" "Validating certificate from file: $cert_file with profile: $profile"
     
     # Get certificate key size
     local key_size
     key_size=$(openssl x509 -in "$cert_file" -text | grep "Public-Key:" | grep -o "[0-9]*")
+    log "DEBUG" "Certificate key size: $key_size bits"
     
     # Check requirements based on profile
     if [[ "$profile" == "DEFAULT" && "$key_size" -lt 2048 ]]; then
+        log "INFO" "Certificate key too weak for DEFAULT profile: $key_size bits"
         return 1
     elif [[ "$profile" == "LEGACY" && "$key_size" -lt 1024 ]]; then
+        log "INFO" "Certificate key too weak for LEGACY profile: $key_size bits"
         return 1
     fi
     
+    log "DEBUG" "Certificate validation passed"
     return 0
 }
 
@@ -168,13 +187,18 @@ start_tls_server() {
     shift 2  # Remove first two arguments
     local extra_args=("$@")  # Remaining arguments become extra_args array
     
+    log "DEBUG" "Starting TLS server with cert: $cert_file, key: $key_file"
+    log "DEBUG" "Additional arguments: ${extra_args[*]}"
+    
     # Kill any existing server
     if [ -n "$SERVER_PID" ]; then
+        log "DEBUG" "Killing existing server process: $SERVER_PID"
         kill "$SERVER_PID" 2>/dev/null || true
         wait "$SERVER_PID" 2>/dev/null || true
     fi
 
     # Start new server instance with proper array expansion
+    log "DEBUG" "Starting OpenSSL server on port $SERVER_PORT"
     openssl s_server \
         -cert "$cert_file" \
         -key "$key_file" \
@@ -183,7 +207,8 @@ start_tls_server() {
         &>"${TEMP_DIR}/logs/server.log" &
     SERVER_PID=$!
     
-    # Wait for server to start
+    log "DEBUG" "Server started with PID: $SERVER_PID"
+    log "DEBUG" "Waiting for server initialization..."
     sleep 2
     
     # Verify server started successfully
@@ -192,6 +217,7 @@ start_tls_server() {
         return 1
     fi
     
+    log "DEBUG" "Server started successfully"
     return 0
 }
 
@@ -200,48 +226,77 @@ setup() {
     local profile="$1"
     local expected_result="$2"
 
+    log "DEBUG" "Setting up test environment with profile: $profile"
+
     # Create working directory
+    log "DEBUG" "Creating working directories"
     mkdir -p "${TEMP_DIR}"/{certs,logs}
+    mkdir -p "${TEMP_DIR}/certs" "${TEMP_DIR}/logs"
 
     # Store original policy
+    log "DEBUG" "Storing original crypto policy"
     ORIGINAL_POLICY=$(update-crypto-policies --show)
+    log "DEBUG" "Original policy: $ORIGINAL_POLICY"
 
     # Set requested crypto policy
+    log "DEBUG" "Setting crypto policy to: $profile"
     update-crypto-policies --set "$profile"
 
     # Generate test certificates
+    log "DEBUG" "Generating strong certificate (2048-bit RSA)"
     openssl req -x509 -newkey rsa:2048 -keyout "${TEMP_DIR}/certs/strong.key" \
         -out "${TEMP_DIR}/certs/strong.crt" -days 1 -nodes \
         -subj "/CN=localhost" 2>/dev/null
 
+    log "DEBUG" "Generating weak certificate (1024-bit RSA)"
     openssl req -x509 -newkey rsa:1024 -keyout "${TEMP_DIR}/certs/weak.key" \
         -out "${TEMP_DIR}/certs/weak.crt" -days 1 -nodes \
         -subj "/CN=localhost" 2>/dev/null
 
     # Generate weak DH params
+    log "DEBUG" "Generating weak DH parameters (1024-bit)"
     openssl dhparam -out "${TEMP_DIR}/certs/weak_dh.pem" 1024 2>/dev/null
 
     # Start packet capture
+    log "DEBUG" "Starting packet capture on port $SERVER_PORT"
     tcpdump -i lo port "$SERVER_PORT" -w "$TCPDUMP_FILE" 2>/dev/null &
     TCPDUMP_PID=$!
     sleep 1
 
     # Create PID file
+    log "DEBUG" "Creating PID file"
     echo "$$" >"${TEMP_DIR}/test.pid"
 
+    log "DEBUG" "Setup complete, returning expected result: $expected_result"
     return "$expected_result"
 }
 
 cleanup() {
+    log "DEBUG" "Starting cleanup"
+
     # Kill running processes
-    if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null; fi
-    if [ -n "$TCPDUMP_PID" ]; then kill "$TCPDUMP_PID" 2>/dev/null; fi
+    if [ -n "$SERVER_PID" ]; then
+        log "DEBUG" "Killing server process: $SERVER_PID"
+        kill "$SERVER_PID" 2>/dev/null
+    fi
+    if [ -n "$TCPDUMP_PID" ]; then
+        log "DEBUG" "Killing tcpdump process: $TCPDUMP_PID"
+        kill "$TCPDUMP_PID" 2>/dev/null
+    fi
 
     # Restore original policy
-    if [ -n "$ORIGINAL_POLICY" ]; then update-crypto-policies --set "$ORIGINAL_POLICY"; fi
+    if [ -n "$ORIGINAL_POLICY" ]; then
+        log "DEBUG" "Restoring original crypto policy: $ORIGINAL_POLICY"
+        update-crypto-policies --set "$ORIGINAL_POLICY"
+    fi
 
     # Remove temp directory
-    if [ -d "$TEMP_DIR" ]; then rm -rf "$TEMP_DIR"; fi
+    if [ -d "${TEMP_DIR}" ]; then
+        log "DEBUG" "Removing temporary directory: ${TEMP_DIR}"
+        rm -rf "${TEMP_DIR}"
+    fi
+
+    log "DEBUG" "Cleanup complete"
 }
 
 # Test Case 1
@@ -294,7 +349,7 @@ test_legacy_server_allows_tls_version_downgrade_to_client_max_supported_version(
     sleep 2  # Increase wait time to ensure server is ready
 
     # Enhanced server startup verification with detailed logging
-    if ! timeout 2 bash -c "echo > /dev/tcp/localhost/$SERVER_PORT" 2>/dev/null; then {
+    if ! timeout 2 bash -c "echo > /dev/tcp/localhost/$SERVER_PORT" 2>/dev/null; then
         log "DEBUG" "Server startup verification failed, collecting diagnostic information"
         
         # Check server logs for startup errors
@@ -339,10 +394,11 @@ test_legacy_server_allows_tls_version_downgrade_to_client_max_supported_version(
         fi
         
         return 1
-    }
+    fi
     
     log "DEBUG" "Attempting TLS 1.1 client connection with debug logging"
-    # Connect with TLS 1.1 client (explicitly disable higher versions)
+    # Rest of the function remains the same...
+    
     timeout 5 openssl s_client -connect "localhost:$SERVER_PORT" \
         -tls1_1 -no_tls1_2 -no_tls1_3 \
         -debug -msg \
