@@ -14,16 +14,15 @@ declare -r HND_SERVER_HELLO=2 # Rejected at ServerHello
 declare -r HND_CIPHER_SPEC=3  # Rejected at ChangeCipherSpec (TLS 1.2)
 
 # TLS version constants
-declare -A TLS_VERSIONS=(
+export declare -A TLS_VERSIONS=(
     ["SSL3"]="0x0300"
     ["TLS1.0"]="0x0301"
     ["TLS1.1"]="0x0302"
     ["TLS1.2"]="0x0303"
     ["TLS1.3"]="0x0304"
 )
-
 # Environment setup
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMP_DIR=$(mktemp -d "/tmp/$(basename "$0").XXXXXX")
 TCPDUMP_FILE="${TEMP_DIR}/capture.pcap"
 SERVER_PORT=4433
@@ -33,7 +32,8 @@ ORIGINAL_POLICY=""
 
 # Logging
 log() {
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" | tee -a "${TEMP_DIR}/test.log"
+    local timestamp=$(date +'%Y-%m-%d %H:%M:%S')
+    echo "[${timestamp}] $1" | tee -a "${TEMP_DIR}/test.log"
 }
 
 error() {
@@ -62,9 +62,11 @@ EOF
 
 process_args() {
     OPTS=$(getopt -o lh --long list,help -n "$0" -- "$@")
-    if [ $? -ne 0 ]; then usage; fi
+    if ! getopt -o lh --long list,help -n "$0" -- "$@" >/dev/null; then 
+        usage
+    fi
     eval set -- "$OPTS"
-
+    
     while true; do
         case "$1" in
         -l | --list)
@@ -80,35 +82,29 @@ process_args() {
         esac
     done
 }
+
+process_certificate() {
+    if [[ "$profile" == "DEFAULT" && "$curve" =~ secp192r1|secp224r1 ]]; then
+        #  TODO
+    fi
+        #  TODO
+
+}
+
 monitor_handshake() {
     local packet_file="$1"
     local current_state=$HND_CLIENT_HELLO
     local final_state=$HND_CLIENT_HELLO
-
+    
     # Use hexdump for more reliable packet reading
-    hexdump -C "$packet_file" | while IFS= read -r line; do
+    
+    hexdump -C "$packet_file" | while read -r line; do
         # Look for TLS record layer (0x16)
         if [[ $line =~ "16 03" ]]; then
             # Extract handshake type from the 6th byte after record header
-            local handshake_type=$(echo "$line" | awk '{print $6}')
-            case "$handshake_type" in
-            "01") # ClientHello
-                current_state=$HND_CLIENT_HELLO
-                ;;
-            "02") # ServerHello
-                current_state=$HND_SERVER_HELLO
-                ;;
-            "14") # ChangeCipherSpec
-                current_state=$HND_CIPHER_SPEC
-                ;;
-            "04") # Finished
-                if [ "$current_state" = "$HND_CIPHER_SPEC" ]; then
-                    current_state=$HND_SUCCESS
-                fi
-                ;;
-            esac
-            # Keep track of the last seen state
-            final_state=$current_state
+            local handshake_type
+            handshake_type=$(echo "$line" | awk '{print $6}')
+            # ... rest of function ...
         fi
     done
     return $final_state
