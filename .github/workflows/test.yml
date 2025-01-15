@@ -43,3 +43,9 @@ jobs:
           work/capture/*.pcap
           work/**/*.log
         retention-days: 7
+    - name: Verify crypto policies
+      run: |
+        update-crypto-policies --show
+        update-crypto-policies --set DEFAULT
+        # Verify policy took effect
+        grep -r "TLS.+" /etc/crypto-policies/back-ends/

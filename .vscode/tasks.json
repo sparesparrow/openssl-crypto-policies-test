@@ -2,12 +2,6 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Setup Test Environment",
-            "type": "shell",
-            "command": "sudo ./setup.sh",
-            "problemMatcher": []
-        },
-        {
             "label": "Run All Tests",
             "type": "shell",
             "command": "sudo ./test.sh",
@@ -19,7 +13,7 @@
         },
         {
             "label": "Run Selected Test",
-            "type": "shell", 
+            "type": "shell",
             "command": "sudo ./test.sh ${input:testName}",
             "problemMatcher": []
         },
@@ -45,7 +39,9 @@
             "label": "Lint Shell Scripts",
             "type": "shell",
             "command": "shellcheck *.sh",
-            "problemMatcher": [""]
+            "problemMatcher": [
+                ""
+            ]
         }
     ],
     "inputs": [

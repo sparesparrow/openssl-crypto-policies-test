@@ -1,23 +1,37 @@
 {
     "name": "OpenSSL Test Environment",
     "image": "fedora:41",
+    "additionalProperties": {
+        "useWorkspaceRootAsCwd": true
+    },
     "features": {
-        "ghcr.io/devcontainers/features/common-utils:2": {
-            "installZsh": false,
-            "installOhMyZsh": false,
-            "username": "vscode",
-            "upgradePackages": true
-        }
+        "ghcr.io/devcontainers/features/common-utils:2": {},
+        "ghcr.io/devcontainers/features/sshd:1": {},
+        "ghcr.io/stuartleeks/dev-container-features/shell-history:0": {},
+        "ghcr.io/lukewiwa/features/shellcheck:0": {},
+        "ghcr.io/edouard-lopez/devcontainer-features/bats:0": {},
+        "ghcr.io/eliises/devcontainer-features/bash-profile:1": {},
+        "ghcr.io/devcontainers-extra/features/bash-command:1": {},
+        "ghcr.io/devcontainers-extra/features/chisel:1": {},
+        "ghcr.io/devcontainers-extra/features/vscode-cli:1": {},
+        "ghcr.io/devcontainers-extra/features/vscode-server:1": {}
     },
     "customizations": {
         "vscode": {
             "extensions": [
                 "timonwong.shellcheck",
                 "mads-hartmann.bash-ide-vscode",
-                "foxundermoon.shell-format"
+                "foxundermoon.shell-format",
+                "rogalmic.bash-debug",
+                "ms-azuretools.vscode-docker",
+                "redhat.vscode-yaml",
+                "github.vscode-github-actions"
             ],
             "settings": {
-                "terminal.integrated.defaultProfile.linux": "bash"
+                "terminal.integrated.defaultProfile.linux": "bash",
+                "files.trimTrailingWhitespace": true,
+                "shellcheck.enable": true,
+                "shellcheck.useWorkspaceRootAsCwd": true
             }
         }
     },
@@ -27,5 +41,8 @@
         "--security-opt",
         "seccomp=unconfined"
     ],
-    "postCreateCommand": "dnf install -y openssl openssl-devel tcpdump net-tools wireshark-cli ShellCheck update-crypto-policies"
+    "postCreateCommand": "dnf install -y openssl openssl-devel tcpdump net-tools wireshark-cli ShellCheck crypto-policies-scripts gnutls-utils git",
+    "remoteUser": "root",
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+    "workspaceFolder": "/workspace"
 }
