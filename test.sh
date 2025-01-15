@@ -29,7 +29,7 @@ export TLS_VERSIONS
 # Environment setup
 export SCRIPT_DIR
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEMP_DIR=$(mktemp -d "/tmp/$(basename "$0").XXXXXX")
+TEMP_DIR="${TEMP_DIR:-/tmp/test-results}"
 TCPDUMP_FILE="${TEMP_DIR}/capture.pcap"
 SERVER_PORT=4433
 SERVER_PID=""
@@ -162,6 +162,39 @@ validate_certificate() {
     return 0
 }
 
+start_tls_server() {
+    local cert_file="$1"
+    local key_file="$2"
+    shift 2  # Remove first two arguments
+    local extra_args=("$@")  # Remaining arguments become extra_args array
+    
+    # Kill any existing server
+    if [ -n "$SERVER_PID" ]; then
+        kill "$SERVER_PID" 2>/dev/null || true
+        wait "$SERVER_PID" 2>/dev/null || true
+    fi
+
+    # Start new server instance with proper array expansion
+    openssl s_server \
+        -cert "$cert_file" \
+        -key "$key_file" \
+        -accept "$SERVER_PORT" \
+        "${extra_args[@]}" \
+        &>"${TEMP_DIR}/logs/server.log" &
+    SERVER_PID=$!
+    
+    # Wait for server to start
+    sleep 2
+    
+    # Verify server started successfully
+    if ! timeout 2 bash -c "echo > /dev/tcp/localhost/$SERVER_PORT" 2>/dev/null; then
+        log "ERROR" "Server failed to start with cert=$cert_file args=${extra_args[*]}"
+        return 1
+    fi
+    
+    return 0
+}
+
 # Environment setup
 setup() {
     local profile="$1"
@@ -244,55 +277,120 @@ test_legacy_server_allows_tls_version_downgrade_to_client_max_supported_version(
     setup "LEGACY" "$HND_SUCCESS"
     local expected_state="$HND_SUCCESS"
 
+    log "DEBUG" "Starting test with LEGACY profile, expected state: $expected_state"
+
     # Start server allowing all versions and explicitly enable TLS 1.1
+    log "DEBUG" "Starting OpenSSL server with TLS 1.1 and debug logging enabled"
     openssl s_server -cert "${TEMP_DIR}/certs/strong.crt" \
         -key "${TEMP_DIR}/certs/strong.key" \
         -accept "$SERVER_PORT" \
         -tls1_1 \
         -no_tls1_3 -no_tls1_2 \
+        -debug -msg \
+        -state -trace \
         &>"${TEMP_DIR}/logs/server.log" &
     SERVER_PID=$!
+    log "DEBUG" "Server started with PID: $SERVER_PID"
     sleep 2  # Increase wait time to ensure server is ready
 
-    # Add server startup verification
+    # Enhanced server startup verification with detailed logging
     if ! timeout 2 bash -c "echo > /dev/tcp/localhost/$SERVER_PORT" 2>/dev/null; then {
-        log "ERROR" "Server failed to start"
+        log "DEBUG" "Server startup verification failed, collecting diagnostic information"
+        
+        # Check server logs for startup errors
+        if [ -f "${TEMP_DIR}/logs/server.log" ]; then
+            log "ERROR" "Server startup logs:"
+            cat "${TEMP_DIR}/logs/server.log" >&2
+            log "DEBUG" "Server log file size: $(wc -l < "${TEMP_DIR}/logs/server.log") lines"
+        else
+            log "ERROR" "Server log file not found at ${TEMP_DIR}/logs/server.log"
+        fi
+        
+        # Check if certificate/key files exist and are readable
+        if [ ! -f "${TEMP_DIR}/certs/strong.crt" ]; then
+            log "ERROR" "Certificate file missing: ${TEMP_DIR}/certs/strong.crt"
+        else
+            log "DEBUG" "Certificate details:"
+            openssl x509 -in "${TEMP_DIR}/certs/strong.crt" -text -noout | head -n 5 >&2
+        fi
+        
+        if [ ! -f "${TEMP_DIR}/certs/strong.key" ]; then
+            log "ERROR" "Key file missing: ${TEMP_DIR}/certs/strong.key"
+        else
+            log "DEBUG" "Key file permissions: $(ls -l "${TEMP_DIR}/certs/strong.key")"
+        fi
+        
+        # Check if port is already in use
+        log "DEBUG" "Checking port $SERVER_PORT status"
+        netstat -tuln | grep ":$SERVER_PORT " >&2
+        
+        # Check server process status
+        if [ -n "$SERVER_PID" ]; then
+            if ! ps -p "$SERVER_PID" >/dev/null; then
+                log "ERROR" "Server process died immediately after start"
+                log "DEBUG" "Last 20 lines of server log:"
+                tail -n 20 "${TEMP_DIR}/logs/server.log" >&2
+            else
+                log "DEBUG" "Server process info:"
+                ps -fp "$SERVER_PID" >&2
+            fi
+        else
+            log "ERROR" "Server PID not captured"
+        fi
+        
         return 1
     }
-    fi
     
+    log "DEBUG" "Attempting TLS 1.1 client connection with debug logging"
     # Connect with TLS 1.1 client (explicitly disable higher versions)
     timeout 5 openssl s_client -connect "localhost:$SERVER_PORT" \
         -tls1_1 -no_tls1_2 -no_tls1_3 \
+        -debug -msg \
+        -state -trace \
         &>"${TEMP_DIR}/logs/client.log" </dev/null
     local client_rc=$?
+    log "DEBUG" "Client connection returned: $client_rc"
 
     monitor_handshake "$TCPDUMP_FILE"
     local actual_state=$?
+    log "DEBUG" "Handshake monitor returned state: $actual_state"
 
     # Enhanced verification with better logging
     if [ "$actual_state" -eq "$expected_state" ] && [ "$client_rc" -eq 0 ]; then
+        log "DEBUG" "Checking negotiated protocol version"
         if grep -q "Protocol.*TLSv1.1" "${TEMP_DIR}/logs/client.log" &&
            ! grep -q "Protocol.*TLSv1.2" "${TEMP_DIR}/logs/client.log"; then
             log "INFO" "Successfully negotiated TLS 1.1 connection"
+            log "DEBUG" "Full protocol negotiation details:"
+            grep "Protocol" "${TEMP_DIR}/logs/client.log" >&2
             return 0
         else
             log "ERROR" "Unexpected protocol version negotiated"
+            log "DEBUG" "Client connection details:"
+            grep -A 5 -B 5 "Protocol" "${TEMP_DIR}/logs/client.log" >&2
+            cat "${TEMP_DIR}/logs/client.log" >&2
         fi
     fi
     
     log "ERROR" "Test failed: actual_state=$actual_state, client_rc=$client_rc"
+    log "DEBUG" "Dumping full client log:"
+    cat "${TEMP_DIR}/logs/client.log" >&2
+    log "DEBUG" "Dumping full server log:"
+    cat "${TEMP_DIR}/logs/server.log" >&2
     
     # Protocol version verification
     if [ "$actual_state" -eq "$expected_state" ] && [ "$client_rc" -eq 0 ]; then
         local negotiated_version
         negotiated_version=$(grep "Protocol  :" "${TEMP_DIR}/logs/client.log" | awk '{print $3}')
+        log "DEBUG" "Extracted negotiated version: $negotiated_version"
         
         if [[ "$negotiated_version" == "TLSv1.1" ]]; then
             log "INFO" "Successfully downgraded to TLS 1.1 as expected"
             return 0
         else
             log "ERROR" "Unexpected protocol version: $negotiated_version"
+            log "DEBUG" "Available cipher suites:"
+            grep "Cipher" "${TEMP_DIR}/logs/client.log" >&2
         fi
     fi
     
