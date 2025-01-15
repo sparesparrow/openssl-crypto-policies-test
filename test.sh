@@ -144,6 +144,23 @@ validate_dh_params() {
     return 0
 }
 
+validate_certificate() {
+    local cert_file="$1"
+    local profile="$2"
+    
+    # Get certificate key size
+    local key_size
+    key_size=$(openssl x509 -in "$cert_file" -text | grep "Public-Key:" | grep -o "[0-9]*")
+    
+    # Check requirements based on profile
+    if [[ "$profile" == "DEFAULT" && "$key_size" -lt 2048 ]]; then
+        return 1
+    elif [[ "$profile" == "LEGACY" && "$key_size" -lt 1024 ]]; then
+        return 1
+    fi
+    
+    return 0
+}
 
 # Environment setup
 setup() {
@@ -242,7 +259,8 @@ test_legacy_server_allows_tls_version_downgrade_to_client_max_supported_version(
         log "ERROR" "Server failed to start"
         return 1
     }
-
+    fi
+    
     # Connect with TLS 1.1 client (explicitly disable higher versions)
     timeout 5 openssl s_client -connect "localhost:$SERVER_PORT" \
         -tls1_1 -no_tls1_2 -no_tls1_3 \
@@ -264,6 +282,20 @@ test_legacy_server_allows_tls_version_downgrade_to_client_max_supported_version(
     fi
     
     log "ERROR" "Test failed: actual_state=$actual_state, client_rc=$client_rc"
+    
+    # Protocol version verification
+    if [ "$actual_state" -eq "$expected_state" ] && [ "$client_rc" -eq 0 ]; then
+        local negotiated_version
+        negotiated_version=$(grep "Protocol  :" "${TEMP_DIR}/logs/client.log" | awk '{print $3}')
+        
+        if [[ "$negotiated_version" == "TLSv1.1" ]]; then
+            log "INFO" "Successfully downgraded to TLS 1.1 as expected"
+            return 0
+        else
+            log "ERROR" "Unexpected protocol version: $negotiated_version"
+        fi
+    fi
+    
     return 1
 }
 
@@ -293,7 +325,17 @@ test_default_server_rejects_client_ChangeCipherSpec() {
         return 0
     fi
 
-    # The rest of the test continues only if server somehow started...
+    # verification of negotiated cipher suite
+    if [ "$SERVER_PID" ]; then
+        if ! openssl s_client -connect "localhost:$SERVER_PORT" \
+            -tls1_2 -cipher "LOW:!aNULL" 2>&1 | \
+            grep -q "SSL handshake has read"; then
+            log "INFO" "Server correctly rejected weak cipher suite"
+            return 0
+        fi
+    fi
+    
+    return 1
 }
 
 list_tests() {
