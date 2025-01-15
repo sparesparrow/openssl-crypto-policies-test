@@ -80,19 +80,18 @@ process_args() {
         esac
     done
 }
-
-# Handshake state monitoring
 monitor_handshake() {
     local packet_file="$1"
     local current_state=$HND_CLIENT_HELLO
+    local final_state=$HND_CLIENT_HELLO
 
-    # Read raw packets without tshark dependency
-    dd if="$packet_file" bs=1 skip=40 2>/dev/null | while read -r -n 1 byte; do
-        # Look for TLS record layer
-        if [[ $(printf "%02x" "'$byte") == "16" ]]; then
-            read -r -n 2 version
-            read -r -n 1 type
-            case $(printf "%02x" "'$type") in
+    # Use hexdump for more reliable packet reading
+    hexdump -C "$packet_file" | while IFS= read -r line; do
+        # Look for TLS record layer (0x16)
+        if [[ $line =~ "16 03" ]]; then
+            # Extract handshake type from the 6th byte after record header
+            local handshake_type=$(echo "$line" | awk '{print $6}')
+            case "$handshake_type" in
             "01") # ClientHello
                 current_state=$HND_CLIENT_HELLO
                 ;;
@@ -102,15 +101,17 @@ monitor_handshake() {
             "14") # ChangeCipherSpec
                 current_state=$HND_CIPHER_SPEC
                 ;;
-            "04") # NewSessionTicket/Finished
+            "04") # Finished
                 if [ "$current_state" = "$HND_CIPHER_SPEC" ]; then
                     current_state=$HND_SUCCESS
                 fi
                 ;;
             esac
+            # Keep track of the last seen state
+            final_state=$current_state
         fi
     done
-    return $current_state
+    return $final_state
 }
 
 # Environment setup
@@ -152,8 +153,8 @@ setup() {
 
 cleanup() {
     # Kill running processes
-    [ -n "$SERVER_PID" ] && kill $SERVER_PID 2>/dev/null || true
-    [ -n "$TCPDUMP_PID" ] && kill $TCPDUMP_PID 2>/dev/null || true
+    [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
+    [ -n "$TCPDUMP_PID" ] && kill "$TCPDUMP_PID" 2>/dev/null || true
 
     # Restore original policy
     [ -n "$ORIGINAL_POLICY" ] && update-crypto-policies --set "$ORIGINAL_POLICY"
@@ -164,18 +165,18 @@ cleanup() {
 
 # Test Case 1
 test_default_client_send_no_hello_if_weak_srv_cert() {
-    setup "DEFAULT" $HND_CLIENT_HELLO
-    local expected_state=$HND_CLIENT_HELLO
+    setup "DEFAULT" "$HND_CLIENT_HELLO"
+    local expected_state="$HND_CLIENT_HELLO"
 
     # Start server with weak certificate
     openssl s_server -cert "${TEMP_DIR}/certs/weak.crt" \
         -key "${TEMP_DIR}/certs/weak.key" \
-        -accept $SERVER_PORT -www &>"${TEMP_DIR}/logs/server.log" &
+        -accept "$SERVER_PORT" -www &>"${TEMP_DIR}/logs/server.log" &
     SERVER_PID=$!
     sleep 1
 
     # Try to connect with TLS 1.3 client
-    openssl s_client -connect localhost:$SERVER_PORT -tls1_3 \
+    openssl s_client -connect "localhost:$SERVER_PORT" -tls1_3 \
         &>"${TEMP_DIR}/logs/client.log" </dev/null
     local client_rc=$?
 
@@ -183,59 +184,82 @@ test_default_client_send_no_hello_if_weak_srv_cert() {
     local actual_state=$?
 
     # Verify client rejected before sending ClientHello
-    [ $actual_state -eq $expected_state ] && [ $client_rc -ne 0 ]
+    [ "$actual_state" -eq "$expected_state" ] && [ "$client_rc" -ne 0 ]
     return $?
 }
 
 # Test Case 2
-test_default_server_rejects_client_ChangeCipherSpec() {
-    setup "DEFAULT" $HND_CIPHER_SPEC
-    local expected_state=$HND_CIPHER_SPEC
+test_legacy_server_allows_tls_version_downgrade_to_client_max_supported_version() {
+    setup "LEGACY" "$HND_SUCCESS"
+    local expected_state="$HND_SUCCESS"
 
-    # Start server with TLS 1.2
+    # Start server allowing all versions and explicitly enable TLS 1.1
     openssl s_server -cert "${TEMP_DIR}/certs/strong.crt" \
         -key "${TEMP_DIR}/certs/strong.key" \
-        -accept $SERVER_PORT -tls1_2 &>"${TEMP_DIR}/logs/server.log" &
+        -accept "$SERVER_PORT" \
+        -tls1_1 \
+        -no_tls1_3 -no_tls1_2 \
+        &>"${TEMP_DIR}/logs/server.log" &
     SERVER_PID=$!
     sleep 1
 
-    # Connect with client forcing weak DH
-    openssl s_client -connect localhost:$SERVER_PORT -tls1_2 \
-        -cipher "EDH" -dhparam "${TEMP_DIR}/certs/weak_dh.pem" \
+    # Connect with TLS 1.1 client (explicitly disable higher versions)
+    openssl s_client -connect "localhost:$SERVER_PORT" \
+        -tls1_1 -no_tls1_2 -no_tls1_3 \
         &>"${TEMP_DIR}/logs/client.log" </dev/null
     local client_rc=$?
 
     monitor_handshake "$TCPDUMP_FILE"
     local actual_state=$?
 
-    # Verify server rejected during ChangeCipherSpec
-    [ $actual_state -eq $expected_state ] && [ $client_rc -ne 0 ]
+    # Enhanced verification
+    [ "$actual_state" -eq "$expected_state" ] &&
+        [ "$client_rc" -eq 0 ] &&
+        grep -q "Protocol.*TLSv1.1" "${TEMP_DIR}/logs/client.log" &&
+        ! grep -q "Protocol.*TLSv1.2" "${TEMP_DIR}/logs/client.log"
     return $?
 }
 
 # Test Case 3
-test_legacy_server_allows_tls_version_downgrade_to_client_max_supported_version() {
-    setup "LEGACY" $HND_SUCCESS
-    local expected_state=$HND_SUCCESS
+test_default_server_rejects_client_ChangeCipherSpec() {
+    setup "DEFAULT" "$HND_CIPHER_SPEC"
+    local expected_state="$HND_CIPHER_SPEC"
 
-    # Start server allowing all versions
+    # Generate weak DH parameters (1024 bits)
+    openssl dhparam -out "${TEMP_DIR}/certs/weak_dh.pem" 1024 2>/dev/null
+
+    # Start server with explicit cipher configuration
     openssl s_server -cert "${TEMP_DIR}/certs/strong.crt" \
         -key "${TEMP_DIR}/certs/strong.key" \
-        -accept $SERVER_PORT -tls1_1 &>"${TEMP_DIR}/logs/server.log" &
+        -accept "$SERVER_PORT" \
+        -tls1_2 \
+        -dhparam "${TEMP_DIR}/certs/weak_dh.pem" \
+        -cipher "ALL:!MEDIUM:!HIGH" \
+        &>"${TEMP_DIR}/logs/server.log" &
     SERVER_PID=$!
     sleep 1
 
-    # Connect with TLS 1.1 client
-    openssl s_client -connect localhost:$SERVER_PORT -tls1_1 \
+    # Connect with client forcing weak parameters
+    openssl s_client -connect "localhost:$SERVER_PORT" \
+        -tls1_2 \
+        -cipher "DES-CBC3-SHA:DES-CBC-SHA" \
+        -curves secp192r1 \
         &>"${TEMP_DIR}/logs/client.log" </dev/null
     local client_rc=$?
 
     monitor_handshake "$TCPDUMP_FILE"
     local actual_state=$?
 
-    # Verify handshake completed with TLS 1.1
-    [ $actual_state -eq $expected_state ] && [ $client_rc -eq 0 ] &&
-        grep -q "Protocol.*TLSv1.1" "${TEMP_DIR}/logs/client.log"
+    # Log the handshake details for debugging
+    log "Client connection returned: $client_rc"
+    log "Handshake state: $actual_state"
+    log "Server log:"
+    cat "${TEMP_DIR}/logs/server.log" >>"${TEMP_DIR}/test.log"
+    log "Client log:"
+    cat "${TEMP_DIR}/logs/client.log" >>"${TEMP_DIR}/test.log"
+
+    # Verify server rejected during ChangeCipherSpec
+    [ "$actual_state" -eq "$expected_state" ] && [ "$client_rc" -ne 0 ]
     return $?
 }
 
@@ -259,20 +283,20 @@ main() {
         # Run all tests
         for test in $(list_tests); do
             log "Running $test..."
-            if $test; then
-                TEST_RESULTS[$test]="PASS"
+            if "$test"; then
+                TEST_RESULTS["$test"]="PASS"
             else
-                TEST_RESULTS[$test]="FAIL"
+                TEST_RESULTS["$test"]="FAIL"
             fi
         done
     else
         # Run specified test
         if declare -F "$1" >/dev/null; then
             log "Running $1..."
-            if $1; then
-                TEST_RESULTS[$1]="PASS"
+            if "$1"; then
+                TEST_RESULTS["$1"]="PASS"
             else
-                TEST_RESULTS[$1]="FAIL"
+                TEST_RESULTS["$1"]="FAIL"
             fi
         else
             error "Unknown test: $1"
