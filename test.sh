@@ -13,6 +13,8 @@ declare -r HND_CLIENT_HELLO=1 # Rejected at ClientHello
 declare -r HND_SERVER_HELLO=2 # Rejected at ServerHello
 declare -r HND_CIPHER_SPEC=3  # Rejected at ChangeCipherSpec (TLS 1.2)
 
+export HND_SERVER_HELLO
+
 # TLS version constants
 declare -r -A TLS_VERSIONS=(
     ["SSL3"]="0x0300"
@@ -21,6 +23,9 @@ declare -r -A TLS_VERSIONS=(
     ["TLS1.2"]="0x0303"
     ["TLS1.3"]="0x0304"
 )
+
+export TLS_VERSIONS
+
 # Environment setup
 export SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMP_DIR=$(mktemp -d "/tmp/$(basename "$0").XXXXXX")
@@ -94,10 +99,11 @@ process_args() {
 
 process_certificate() {
     if [[ "$profile" == "DEFAULT" && "$curve" =~ (secp192r1|secp224r1) ]]; then
-
+        true
         #  TODO
     fi
         #  TODO
+    true
 
 }
 
@@ -110,7 +116,8 @@ monitor_handshake() {
         if [[ $line =~ 16[[:space:]]03 ]]; then
             local handshake_type
             handshake_type=$(echo "$line" | awk '{print $6}')
-            # ... rest of function ...
+            current_state=$handshake_type  # Example usage
+            final_state=$current_state     # Example usage
         fi
     done < <(hexdump -C "$packet_file")
     
