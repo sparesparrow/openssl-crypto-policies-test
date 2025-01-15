@@ -381,7 +381,7 @@ test_legacy_server_allows_tls_version_downgrade_to_client_max_supported_version(
         
         # Check server process status
         if [ -n "$SERVER_PID" ]; then
-            if ! ps -p "$SERVER_PID" >/dev/null; then
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
                 log "ERROR" "Server process died immediately after start"
                 log "DEBUG" "Last 20 lines of server log:"
                 tail -n 20 "${TEMP_DIR}/logs/server.log" >&2
