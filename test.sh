@@ -27,7 +27,8 @@ declare -r -A TLS_VERSIONS=(
 export TLS_VERSIONS
 
 # Environment setup
-export SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export SCRIPT_DIR
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMP_DIR=$(mktemp -d "/tmp/$(basename "$0").XXXXXX")
 TCPDUMP_FILE="${TEMP_DIR}/capture.pcap"
 SERVER_PORT=4433
@@ -40,7 +41,8 @@ ORIGINAL_POLICY=""
 log() {
     local level="$1"
     local message="$2"
-    local timestamp=$(date +'%Y-%m-%d %H:%M:%S')
+    local timestamp
+    timestamp=$(date +'%Y-%m-%d %H:%M:%S')
     local test_name="${CURRENT_TEST:-unknown}"
     echo "[$timestamp][$level][$test_name] $message" | tee -a "${TEMP_DIR}/test.log"
 }
@@ -98,13 +100,12 @@ process_args() {
 }
 
 process_certificate() {
+    local curve="$1"
     if [[ "$profile" == "DEFAULT" && "$curve" =~ (secp192r1|secp224r1) ]]; then
-        true
-        #  TODO
+        # For DEFAULT profile, reject weak elliptic curves
+        log "INFO" "Rejecting weak elliptic curve $curve"
+        return 1
     fi
-        #  TODO
-    true
-
 }
 
 monitor_handshake() {

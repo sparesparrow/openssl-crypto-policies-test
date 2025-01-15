@@ -1,9 +1,6 @@
 {
     "name": "OpenSSL Test Environment",
     "image": "fedora:41",
-    "additionalProperties": {
-        "useWorkspaceRootAsCwd": true
-    },
     "features": {
         "ghcr.io/devcontainers/features/common-utils:2": {},
         "ghcr.io/devcontainers/features/sshd:1": {},
@@ -11,10 +8,7 @@
         "ghcr.io/lukewiwa/features/shellcheck:0": {},
         "ghcr.io/edouard-lopez/devcontainer-features/bats:0": {},
         "ghcr.io/eliises/devcontainer-features/bash-profile:1": {},
-        "ghcr.io/devcontainers-extra/features/bash-command:1": {},
-        "ghcr.io/devcontainers-extra/features/chisel:1": {},
-        "ghcr.io/devcontainers-extra/features/vscode-cli:1": {},
-        "ghcr.io/devcontainers-extra/features/vscode-server:1": {}
+        "ghcr.io/devcontainers-extra/features/bash-command:1": {}
     },
     "customizations": {
         "vscode": {
@@ -31,7 +25,10 @@
                 "terminal.integrated.defaultProfile.linux": "bash",
                 "files.trimTrailingWhitespace": true,
                 "shellcheck.enable": true,
-                "shellcheck.useWorkspaceRootAsCwd": true
+                "shellcheck.useWorkspaceRootAsCwd": true,
+                "files.watcherExclude": {
+                    "**/target": true
+                }
             }
         }
     },
@@ -41,8 +38,10 @@
         "--security-opt",
         "seccomp=unconfined"
     ],
-    "postCreateCommand": "dnf install -y openssl openssl-devel tcpdump net-tools wireshark-cli ShellCheck crypto-policies-scripts gnutls-utils git",
-    "remoteUser": "root",
-    "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+    "mounts": [
+        "source=${localWorkspaceFolder},target=/workspace,type=bind"
+    ],
+    "postCreateCommand": "dnf update -y && dnf install -y openssl openssl-devel tcpdump net-tools wireshark-cli ShellCheck crypto-policies-scripts gnutls-utils git && chown -R vscode:vscode /workspace",
+    "remoteUser": "vscode",
     "workspaceFolder": "/workspace"
 }

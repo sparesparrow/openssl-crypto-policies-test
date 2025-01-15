@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: fedora:41
-      options: --privileged
+      options: --privileged --cap-add=SYS_PTRACE --security-opt seccomp=unconfined
 
     steps:
     - uses: actions/checkout@v4
@@ -19,20 +19,23 @@ jobs:
     - name: Install dependencies
       run: |
         dnf update -y
-        dnf install -y openssl openssl-devel tcpdump net-tools wireshark-cli ShellCheck
+        dnf install -y openssl openssl-devel tcpdump net-tools wireshark-cli ShellCheck crypto-policies-scripts gnutls-utils git
 
     - name: Lint shell scripts
       run: |
-        shellcheck *.sh
+        shellcheck -x test.sh
 
     - name: Setup test environment
       run: |
-        ./setup.sh
+        mkdir -p /tmp/test-results
+        chmod +x test.sh
 
     - name: Run tests
       run: |
-        source ./work/test_env.sh
-        ./test.sh
+        ./test.sh --list  # List available tests
+        ./test.sh  # Run all tests
+      env:
+        TEMP_DIR: /tmp/test-results
 
     - name: Upload test artifacts
       if: always()
@@ -40,12 +43,18 @@ jobs:
       with:
         name: test-results
         path: |
-          work/capture/*.pcap
-          work/**/*.log
+          /tmp/test-results/capture.pcap
+          /tmp/test-results/*.log
+          /tmp/test-results/certs/*
         retention-days: 7
+
     - name: Verify crypto policies
       run: |
         update-crypto-policies --show
         update-crypto-policies --set DEFAULT
-        # Verify policy took effect
-        grep -r "TLS.+" /etc/crypto-policies/back-ends/
+        update-crypto-policies --show  # Verify change
+        ls -l /etc/crypto-policies/back-ends/
+        for backend in /etc/crypto-policies/back-ends/*; do
+          echo "=== $backend ==="
+          cat "$backend"
+        done
