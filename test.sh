@@ -125,6 +125,25 @@ monitor_handshake() {
     return "$final_state"
 }
 
+# Add missing validate_dh_params function
+validate_dh_params() {
+    local dh_file="$1"
+    local profile="$2"
+    
+    # Get DH parameter size
+    local dh_size
+    dh_size=$(openssl dhparam -in "$dh_file" -text 2>/dev/null | grep "P:" | wc -c)
+    
+    # Check size requirements based on profile
+    if [[ "$profile" == "DEFAULT" && "$dh_size" -lt 2048 ]]; then
+        return 1
+    elif [[ "$profile" == "LEGACY" && "$dh_size" -lt 1024 ]]; then
+        return 1
+    fi
+    
+    return 0
+}
+
 
 # Environment setup
 setup() {
@@ -216,10 +235,16 @@ test_legacy_server_allows_tls_version_downgrade_to_client_max_supported_version(
         -no_tls1_3 -no_tls1_2 \
         &>"${TEMP_DIR}/logs/server.log" &
     SERVER_PID=$!
-    sleep 1
+    sleep 2  # Increase wait time to ensure server is ready
+
+    # Add server startup verification
+    if ! timeout 2 bash -c "echo > /dev/tcp/localhost/$SERVER_PORT" 2>/dev/null; then {
+        log "ERROR" "Server failed to start"
+        return 1
+    }
 
     # Connect with TLS 1.1 client (explicitly disable higher versions)
-    openssl s_client -connect "localhost:$SERVER_PORT" \
+    timeout 5 openssl s_client -connect "localhost:$SERVER_PORT" \
         -tls1_1 -no_tls1_2 -no_tls1_3 \
         &>"${TEMP_DIR}/logs/client.log" </dev/null
     local client_rc=$?
@@ -227,15 +252,19 @@ test_legacy_server_allows_tls_version_downgrade_to_client_max_supported_version(
     monitor_handshake "$TCPDUMP_FILE"
     local actual_state=$?
 
-    # Enhanced verification
-    if [ "$actual_state" -eq "$expected_state" ] &&
-        [ "$client_rc" -eq 0 ] &&
-        grep -q "Protocol.*TLSv1.1" "${TEMP_DIR}/logs/client.log" &&
-        ! grep -q "Protocol.*TLSv1.2" "${TEMP_DIR}/logs/client.log"; then
-        return 0
-    else
-        return 1
+    # Enhanced verification with better logging
+    if [ "$actual_state" -eq "$expected_state" ] && [ "$client_rc" -eq 0 ]; then
+        if grep -q "Protocol.*TLSv1.1" "${TEMP_DIR}/logs/client.log" &&
+           ! grep -q "Protocol.*TLSv1.2" "${TEMP_DIR}/logs/client.log"; then
+            log "INFO" "Successfully negotiated TLS 1.1 connection"
+            return 0
+        else
+            log "ERROR" "Unexpected protocol version negotiated"
+        fi
     fi
+    
+    log "ERROR" "Test failed: actual_state=$actual_state, client_rc=$client_rc"
+    return 1
 }
 
 # Test Case 3

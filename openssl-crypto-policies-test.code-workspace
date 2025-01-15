@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"*.sh": "shellscript"
+		},
+		"terminal.integrated.scrollback": 10000
+	}
+}
