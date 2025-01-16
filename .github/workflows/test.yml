@@ -62,7 +62,7 @@ jobs:
     - name: Run tests
       shell: bash
       run: |
-        ./test.sh --list
+        ./test.sh -l
         ./test.sh
       env:
         TEMP_DIR: /tmp/test-results

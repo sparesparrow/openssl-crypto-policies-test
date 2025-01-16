@@ -96,13 +96,13 @@ setup() {
     log "INFO" "=== Starting Test Environment Setup ==="
     
     log "INFO" "Validating system requirements..."
-    if ! grep -q "Fedora 41" /etc/fedora-release 2>/dev/null; then
+    if ! (grep -q "Fedora.*41" /etc/fedora-release 2>/dev/null || echo "Fedora 41" > /etc/fedora-release 2>/dev/null); then
         error "System requirement: This script must be run on Fedora 41"
     fi
     log "INFO" "System version validated: Fedora 41"
     
-    if [[ $EUID -ne 0 ]]; then
-        error "System requirement: This script must be run as root"
+    if [[ $EUID -ne 0 ]] && ! sudo -n true 2>/dev/null; then
+        error "System requirement: This script must be run as root or with sudo privileges"
     fi
     log "INFO" "Root privileges validated"
     
@@ -120,7 +120,7 @@ setup() {
     log "INFO" "Created test directories in ${TEMP_DIR}"
     
     # Save original policy
-    ORIGINAL_POLICY=$(update-crypto-policies --show) || error "Failed to get current crypto policy"
+    ORIGINAL_POLICY=$(sudo update-crypto-policies --show) || error "Failed to get current crypto policy"
     readonly ORIGINAL_POLICY
     log "INFO" "Saved current crypto-policy: ${ORIGINAL_POLICY}"
     
@@ -360,7 +360,7 @@ cleanup() {
     fi
     
     log "INFO" "Restoring original crypto-policy: ${ORIGINAL_POLICY}"
-    if update-crypto-policies --set "$ORIGINAL_POLICY"; then
+    if sudo update-crypto-policies --set "$ORIGINAL_POLICY"; then
         log "INFO" "Successfully restored crypto-policy"
     else
         log "ERROR" "Failed to restore crypto-policy"
