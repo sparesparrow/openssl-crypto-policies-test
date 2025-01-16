@@ -1,6 +1,7 @@
 FROM fedora:41
 
-# Install necessary packages
+# Install necessary packages as root during build
+USER root
 RUN dnf update -y && dnf install -y \
     openssl \
     openssl-devel \
