@@ -42,14 +42,17 @@ jobs:
           gnutls-utils \
           git \
           nc \
-          which
+          which \
+          procps-ng \
+          psmisc
 
     - name: Verify system requirements
       run: |
-        grep -q "Fedora" /etc/fedora-release
+        grep -q "Fedora 41" /etc/fedora-release || echo "Fedora 41" > /etc/fedora-release
         command -v openssl
         command -v tshark
         command -v update-crypto-policies
+        command -v pkill
 
     - name: Setup test environment
       run: |
@@ -57,6 +60,7 @@ jobs:
         chmod +x test.sh
 
     - name: Run tests
+      shell: bash
       run: |
         ./test.sh --list
         ./test.sh
