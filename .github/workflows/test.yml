@@ -10,7 +10,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v3
     
     - name: Run ShellCheck
       uses: ludeeus/action-shellcheck@master
@@ -61,6 +61,7 @@ jobs:
         ./test.sh
       env:
         TEMP_DIR: /tmp/test-results
+      continue-on-error: false
 
     - name: Upload test artifacts
       if: always()
@@ -78,3 +79,6 @@ jobs:
         update-crypto-policies --set DEFAULT
         update-crypto-policies --show
         ls -l /etc/crypto-policies/back-ends/
+
+    - name: Install BATS
+      run: dnf install -y bats
