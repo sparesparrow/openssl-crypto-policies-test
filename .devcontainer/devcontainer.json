@@ -1,14 +1,22 @@
 {
-    "name": "OpenSSL Test Environment",
+    "name": "OpenSSL Crypto-policies Test Environment",
     "image": "fedora:41",
     "features": {
-        "ghcr.io/devcontainers/features/common-utils:2": {},
-        "ghcr.io/devcontainers/features/sshd:1": {},
-        "ghcr.io/stuartleeks/dev-container-features/shell-history:0": {},
-        "ghcr.io/lukewiwa/features/shellcheck:0": {},
-        "ghcr.io/edouard-lopez/devcontainer-features/bats:0": {},
-        "ghcr.io/eliises/devcontainer-features/bash-profile:1": {},
-        "ghcr.io/devcontainers-extra/features/bash-command:1": {}
+        "ghcr.io/devcontainers/features/common-utils:2": {
+            "installZsh": false,
+            "username": "vscode",
+            "upgradePackages": true,
+            "nonFreePackages": true
+        },
+        "ghcr.io/stuartleeks/dev-container-features/shell-history:0": {
+            "format": "timestamp"
+        },
+        "ghcr.io/lukewiwa/features/shellcheck:0": {
+            "version": "stable"
+        },
+        "ghcr.io/edouard-lopez/devcontainer-features/bats:0": {
+            "version": "latest"
+        }
     },
     "customizations": {
         "vscode": {
@@ -19,15 +27,36 @@
                 "rogalmic.bash-debug",
                 "ms-azuretools.vscode-docker",
                 "redhat.vscode-yaml",
-                "github.vscode-github-actions"
+                "github.vscode-github-actions",
+                "streetsidesoftware.code-spell-checker",
+                "eamodio.gitlens",
+                "yzhang.markdown-all-in-one",
+                "davidanson.vscode-markdownlint"
             ],
             "settings": {
                 "terminal.integrated.defaultProfile.linux": "bash",
+                "terminal.integrated.profiles.linux": {
+                    "bash": {
+                        "path": "/bin/bash",
+                        "icon": "terminal-bash"
+                    }
+                },
                 "files.trimTrailingWhitespace": true,
+                "files.insertFinalNewline": true,
+                "files.trimFinalNewlines": true,
                 "shellcheck.enable": true,
                 "shellcheck.useWorkspaceRootAsCwd": true,
-                "files.watcherExclude": {
-                    "**/target": true
+                "shellcheck.run": "onSave",
+                "shellcheck.executablePath": "shellcheck",
+                "shellformat.flag": "-i 4 -ci -bn -sr",
+                "editor.formatOnSave": true,
+                "editor.rulers": [
+                    80,
+                    100
+                ],
+                "editor.renderWhitespace": "boundary",
+                "workbench.colorCustomizations": {
+                    "editorRuler.foreground": "#3d3d3d40"
                 }
             }
         }
@@ -36,12 +65,26 @@
         "--privileged",
         "--cap-add=SYS_PTRACE",
         "--security-opt",
-        "seccomp=unconfined"
+        "seccomp=unconfined",
+        "--network=host"
     ],
     "mounts": [
-        "source=${localWorkspaceFolder},target=/workspace,type=bind"
+        "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached"
     ],
-    "postCreateCommand": "dnf update -y && dnf install -y openssl openssl-devel tcpdump net-tools wireshark-cli ShellCheck crypto-policies-scripts gnutls-utils git && chown -R vscode:vscode /workspace",
+    "initializeCommand": "mkdir -p ${localWorkspaceFolder}/.devcontainer/logs",
+    "postCreateCommand": {
+        "install-deps": [
+            "dnf update -y && dnf install -y openssl openssl-devel tcpdump net-tools wireshark-cli ShellCheck crypto-policies-scripts gnutls-utils git nc procps-ng psmisc iproute bind-utils lsof strace bats tree jq vim"
+        ],
+        "setup-perms": "chown -R vscode:vscode /workspace"
+    },
+    "postStartCommand": "echo 'DevContainer started successfully' > /workspace/.devcontainer/logs/startup.log",
     "remoteUser": "vscode",
-    "workspaceFolder": "/workspace"
+    "workspaceFolder": "/workspace",
+    "remoteEnv": {
+        "SHELL": "/bin/bash",
+        "EDITOR": "code --wait",
+        "OPENSSL_CONF": "/etc/ssl/openssl.cnf",
+        "PATH": "${containerEnv:PATH}:/workspace/bin"
+    }
 }

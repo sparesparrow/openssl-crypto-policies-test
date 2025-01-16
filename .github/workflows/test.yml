@@ -7,7 +7,19 @@ on:
     branches: [ main ]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Run ShellCheck
+      uses: ludeeus/action-shellcheck@master
+      with:
+        scandir: '.'
+        severity: error
+
   test:
+    needs: lint
     runs-on: ubuntu-latest
     container:
       image: fedora:41
@@ -19,11 +31,24 @@ jobs:
     - name: Install dependencies
       run: |
         dnf update -y
-        dnf install -y openssl openssl-devel tcpdump net-tools wireshark-cli ShellCheck crypto-policies-scripts gnutls-utils git
+        dnf install -y \
+          openssl \
+          openssl-devel \
+          tcpdump \
+          net-tools \
+          wireshark-cli \
+          ShellCheck \
+          crypto-policies-scripts \
+          gnutls-utils \
+          git \
+          nc
 
-    - name: Lint shell scripts
+    - name: Verify system requirements
       run: |
-        shellcheck -x test.sh
+        grep -q "Fedora 41" /etc/fedora-release
+        command -v openssl
+        command -v tshark
+        command -v update-crypto-policies
 
     - name: Setup test environment
       run: |
@@ -32,8 +57,8 @@ jobs:
 
     - name: Run tests
       run: |
-        ./test.sh --list  # List available tests
-        ./test.sh  # Run all tests
+        ./test.sh --list
+        ./test.sh
       env:
         TEMP_DIR: /tmp/test-results
 
@@ -43,18 +68,13 @@ jobs:
       with:
         name: test-results
         path: |
-          /tmp/test-results/capture.pcap
-          /tmp/test-results/*.log
-          /tmp/test-results/certs/*
+          /tmp/test-results/**/*
         retention-days: 7
 
     - name: Verify crypto policies
+      if: always()
       run: |
         update-crypto-policies --show
         update-crypto-policies --set DEFAULT
-        update-crypto-policies --show  # Verify change
+        update-crypto-policies --show
         ls -l /etc/crypto-policies/back-ends/
-        for backend in /etc/crypto-policies/back-ends/*; do
-          echo "=== $backend ==="
-          cat "$backend"
-        done

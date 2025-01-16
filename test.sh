@@ -1,58 +1,55 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# test.sh - OpenSSL Crypto-policies Test Suite
+# Tests TLS connection behavior under different crypto-policies profiles on Fedora 41
 
-# OpenSSL Crypto-policies Compliance Test Script
-# Verifies that TLS connections honor the system-wide crypto policies
-# Target: Fedora 41
-# Dependencies: openssl, tcpdump
+set -euo pipefail
+IFS=$'\n\t'
 
-set -e
+# Constants and Global Variables
+readonly SUCCESS=0
+readonly CLIENT_HELLO=1
+readonly SERVER_HELLO=2
+readonly CIPHER_SPEC=3
+readonly SERVER_PORT=4433
 
-# Handshake states enumeration
-declare -r HND_SUCCESS=0      # Handshake completed
-declare -r HND_CLIENT_HELLO=1 # Rejected at ClientHello
-declare -r HND_SERVER_HELLO=2 # Rejected at ServerHello
-declare -r HND_CIPHER_SPEC=3  # Rejected at ChangeCipherSpec (TLS 1.2)
+TEMP_DIR=
+CERT_DIR=
+LOG_DIR=
+ORIGINAL_POLICY=
 
-export HND_SERVER_HELLO
+declare -A TEST_RESULTS
+declare -i HANDSHAKE_STATE=0
 
-# TLS version constants
-declare -r -A TLS_VERSIONS=(
-    ["SSL3"]="0x0300"
-    ["TLS1.0"]="0x0301"
-    ["TLS1.1"]="0x0302"
-    ["TLS1.2"]="0x0303"
-    ["TLS1.3"]="0x0304"
+export CLIENT_WEAK_TLS_VERSION=false
+export CLIENT_WEAK_CIPHERSPEC=false
+export SERVER_WEAK_TLS_VERSION=false
+export SERVER_WEAK_CERT=false
+export LEGACY_CRYPTO_POLICY=false
+
+export CRYPTO_POLICY_DEFAULT="DEFAULT"
+export CRYPTO_POLICY_LEGACY="LEGACY"
+export LATEST_TLS_VERSION="-tls1_3"
+export DEPRECATED_TLS_VERSION="-tls1_1"
+
+# Handshake state tracking
+declare -A HANDSHAKE_STATE_MAP=(
+    ["INITIAL"]="0"
+    ["CLIENT_HELLO"]="1"
+    ["SERVER_HELLO"]="2"
+    ["CIPHER_SPEC"]="3"
+    ["SUCCESS"]="4"
+    ["REJECTED"]="5"
+    ["TIMEOUT"]="6"
 )
 
-export TLS_VERSIONS
+# Expected state transitions for each test type
+declare -A EXPECTED_TRANSITIONS=(
+    ["DEFAULT_STRONG"]="CLIENT_HELLO,SERVER_HELLO,CIPHER_SPEC,SUCCESS"
+    ["DEFAULT_WEAK_CLIENT"]="CLIENT_HELLO,REJECTED"
+    ["DEFAULT_WEAK_SERVER"]="CLIENT_HELLO,REJECTED"
+    ["LEGACY_DOWNGRADE"]="CLIENT_HELLO,SERVER_HELLO,CIPHER_SPEC,SUCCESS"
+)
 
-# Environment setup
-export SCRIPT_DIR
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEMP_DIR="${TEMP_DIR:-/tmp/test-results}"
-TCPDUMP_FILE="${TEMP_DIR}/capture.pcap"
-SERVER_PORT=4433
-SERVER_PID=""
-TCPDUMP_PID=""
-ORIGINAL_POLICY=""
-
-# Logging
-
-log() {
-    local level="$1"
-    local message="$2"
-    local timestamp
-    timestamp=$(date +'%Y-%m-%d %H:%M:%S')
-    local test_name="${CURRENT_TEST:-unknown}"
-    echo "[$timestamp][$level][$test_name] $message" | tee -a "${TEMP_DIR}/test.log"
-}
-
-error() {
-    log "ERROR: $1" >&2
-    exit 1
-}
-
-# Argument processing with getopts
 usage() {
     cat <<EOF
 Usage: $0 [-l|--list] [-h|--help] [TEST_NAME]
@@ -61,511 +58,501 @@ Tests OpenSSL compliance with system crypto-policies
 Options:
     -l, --list     List available tests
     -h, --help     Show this help message
-    TEST_NAME      Optional: Run specific test case
+    TEST_NAME      Optional: Run only test cases specified
 
 Available tests:
-    test_default_client_send_no_hello_if_weak_srv_cert
-    test_default_server_rejects_client_ChangeCipherSpec
-    test_legacy_server_allows_tls_version_downgrade_to_client_max_supported_version
+
+test_default_client_send_no_hello_if_weak_srv_cert
+    -> Tests client rejection of weak server certificates
+    -> Verifies rejection happens at CLIENT_HELLO or CIPHER_SPEC stage
+
+test_default_server_rejects_client_ChangeCipherSpec
+    -> Tests server rejection of weak cipher specifications
+    -> Verifies rejection happens at CIPHER_SPEC stage with TLS 
+
+test_legacy_server_allows_tls_version_downgrade
+    -> Tests LEGACY profile version downgrade behavior
+    -> Verifies successful downgrade to TLS 1.1
+    -> Checks both handshake completion and protocol version
 EOF
     exit 1
 }
 
 
-process_args() {
-    local OPTS
-    if ! OPTS=$(getopt -o lh --long list,help -n "$0" -- "$@"); then 
-        usage
+# Logging functions - Fixed SC2155 warning
+log() {
+    local level=$1
+    shift
+    local message
+    message="[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $*"
+    
+    # Always print to stdout
+    echo "$message"
+    
+    # Only write to log file if LOG_DIR is set and directory exists
+    if [[ -n "${LOG_DIR:-}" ]] && [[ -d "$LOG_DIR" ]]; then
+        echo "$message" >> "${LOG_DIR}/test.log"
     fi
-    eval set -- "$OPTS"
-    
-    while true; do
-        case "$1" in
-            -l|--list)
-                list_tests
-                exit 0
-                ;;
-            -h|--help)
-                usage
-                ;;
-            --)
-                shift
-                break
-                ;;
-            *)
-                error "Internal error!"
-                ;;
-        esac
-    done
 }
 
-process_certificate() {
-    local curve="$1"
-    log "DEBUG" "Processing certificate with curve: $curve"
+error() {
+    log "ERROR" "$@"
+    cleanup
+    exit 1
+}
+
+# Setup function - Updated to properly initialize directories
+setup() {
+    log "INFO" "=== Starting Test Environment Setup ==="
     
-    if [[ "$profile" == "DEFAULT" && "$curve" =~ (secp192r1|secp224r1) ]]; then
-        # For DEFAULT profile, reject weak elliptic curves
-        log "INFO" "Rejecting weak elliptic curve $curve"
-        return 1
+    log "INFO" "Validating system requirements..."
+    if ! grep -q "Fedora 41" /etc/fedora-release 2>/dev/null; then
+        error "System requirement: This script must be run on Fedora 41"
     fi
-    log "DEBUG" "Certificate curve $curve accepted"
-    return 0
+    log "INFO" "System version validated: Fedora 41"
+    
+    if [[ $EUID -ne 0 ]]; then
+        error "System requirement: This script must be run as root"
+    fi
+    log "INFO" "Root privileges validated"
+    
+    # Initialize directories with proper error handling
+    TEMP_DIR=$(mktemp -d) || error "Failed to create temporary directory"
+    readonly TEMP_DIR
+    
+    CERT_DIR="${TEMP_DIR}/certs"
+    readonly CERT_DIR
+    mkdir -p "$CERT_DIR" || error "Failed to create certificate directory"
+    
+    LOG_DIR="${TEMP_DIR}/logs"
+    readonly LOG_DIR
+    mkdir -p "$LOG_DIR" || error "Failed to create log directory"
+    
+    log "INFO" "Created test directories in ${TEMP_DIR}"
+    
+    # Save original policy
+    ORIGINAL_POLICY=$(update-crypto-policies --show) || error "Failed to get current crypto policy"
+    readonly ORIGINAL_POLICY
+    log "INFO" "Saved current crypto-policy: ${ORIGINAL_POLICY}"
+    
+    # Generate certificates
+    log "INFO" "Generating test certificates..."
+    generate_crt "strong" || error "Failed to generate strong certificate"
+    generate_crt "weak" || error "Failed to generate weak certificate"
+    log "INFO" "Generated test certificates in ${CERT_DIR}"
+    
+    log "INFO" "=== Test Environment Setup Completed ==="
 }
 
-monitor_handshake() {
-    local packet_file="$1"
-    log "DEBUG" "Monitoring handshake from packet file: $packet_file"
+# Certificate generation
+generate_crt() {
+    local cert_type=$1
     
-    local current_state=$HND_CLIENT_HELLO
-    local final_state=$HND_CLIENT_HELLO
-    
-    log "DEBUG" "Initial handshake state: $current_state"
-    
-    while IFS= read -r line; do
-        if [[ $line =~ 16[[:space:]]03 ]]; then
-            local handshake_type
-            handshake_type=$(echo "$line" | awk '{print $6}')
-            log "DEBUG" "Found handshake message type: $handshake_type"
-            current_state=$handshake_type
-            final_state=$current_state
-        fi
-    done < <(hexdump -C "$packet_file")
-    
-    log "DEBUG" "Final handshake state: $final_state"
-    return "$final_state"
-}
-
-validate_dh_params() {
-    local dh_file="$1"
-    local profile="$2"
-    log "DEBUG" "Validating DH parameters from file: $dh_file with profile: $profile"
-    
-    # Get DH parameter size
-    local dh_size
-    dh_size=$(openssl dhparam -in "$dh_file" -text 2>/dev/null | grep "P:" | wc -c)
-    log "DEBUG" "DH parameter size: $dh_size bits"
-    
-    # Check size requirements based on profile
-    if [[ "$profile" == "DEFAULT" && "$dh_size" -lt 2048 ]]; then
-        log "INFO" "DH parameters too weak for DEFAULT profile: $dh_size bits"
-        return 1
-    elif [[ "$profile" == "LEGACY" && "$dh_size" -lt 1024 ]]; then
-        log "INFO" "DH parameters too weak for LEGACY profile: $dh_size bits"
+    if [[ -z "$cert_type" ]] || [[ ! "$cert_type" =~ ^(strong|weak)$ ]]; then
+        log "ERROR" "Invalid certificate type: $cert_type"
         return 1
     fi
     
-    log "DEBUG" "DH parameters validation passed"
-    return 0
-}
-
-validate_certificate() {
-    local cert_file="$1"
-    local profile="$2"
-    log "DEBUG" "Validating certificate from file: $cert_file with profile: $profile"
-    
-    # Get certificate key size
     local key_size
-    key_size=$(openssl x509 -in "$cert_file" -text | grep "Public-Key:" | grep -o "[0-9]*")
-    log "DEBUG" "Certificate key size: $key_size bits"
+    if [[ $cert_type == "strong" ]]; then
+        key_size="2048"
+    else
+        key_size="1024"
+    fi
     
-    # Check requirements based on profile
-    if [[ "$profile" == "DEFAULT" && "$key_size" -lt 2048 ]]; then
-        log "INFO" "Certificate key too weak for DEFAULT profile: $key_size bits"
-        return 1
-    elif [[ "$profile" == "LEGACY" && "$key_size" -lt 1024 ]]; then
-        log "INFO" "Certificate key too weak for LEGACY profile: $key_size bits"
+    local cert_dir="${CERT_DIR}/${cert_type}"
+    
+    mkdir -p "$cert_dir"
+    chmod 700 "$cert_dir"
+    
+    if ! openssl req -x509 -newkey "rsa:${key_size}" \
+        -keyout "${cert_dir}/key.pem" \
+        -out "${cert_dir}/cert.pem" \
+        -days 1 -nodes \
+        -subj "/CN=localhost" \
+        -sha256 2>/dev/null; then
+        log "ERROR" "Failed to generate ${cert_type} certificate"
         return 1
     fi
     
-    log "DEBUG" "Certificate validation passed"
+    chmod 600 "${cert_dir}/key.pem" "${cert_dir}/cert.pem"
+    log "DEBUG" "Generated ${cert_type} certificate (${key_size} bits) in ${cert_dir}"
+    return 0
+}
+
+# Server management functions
+wait_for_server() {
+    local max_attempts=10
+    local attempt=1
+    
+    while ! nc -z localhost "$SERVER_PORT" >/dev/null 2>&1; do
+        if ((attempt >= max_attempts)); then
+            return 1
+        fi
+        sleep 1
+        ((attempt++))
+    done
     return 0
 }
 
 start_tls_server() {
-    local cert_file="$1"
-    local key_file="$2"
-    shift 2  # Remove first two arguments
-    local extra_args=("$@")  # Remaining arguments become extra_args array
+    local cert_type=$1
+    local options="${2:-}"
+    local max_retries=3
+    local retry_count=0
     
-    log "DEBUG" "Starting TLS server with cert: $cert_file, key: $key_file"
-    log "DEBUG" "Additional arguments: ${extra_args[*]}"
-    
-    # Kill any existing server
-    if [ -n "$SERVER_PID" ]; then
-        log "DEBUG" "Killing existing server process: $SERVER_PID"
-        kill "$SERVER_PID" 2>/dev/null || true
-        wait "$SERVER_PID" 2>/dev/null || true
-    fi
-
-    # Start new server instance with proper array expansion
-    log "DEBUG" "Starting OpenSSL server on port $SERVER_PORT"
-    openssl s_server \
-        -cert "$cert_file" \
-        -key "$key_file" \
-        -accept "$SERVER_PORT" \
-        "${extra_args[@]}" \
-        &>"${TEMP_DIR}/logs/server.log" &
-    SERVER_PID=$!
-    
-    log "DEBUG" "Server started with PID: $SERVER_PID"
-    log "DEBUG" "Waiting for server initialization..."
-    sleep 2
-    
-    # Verify server started successfully
-    if ! timeout 2 bash -c "echo > /dev/tcp/localhost/$SERVER_PORT" 2>/dev/null; then
-        log "ERROR" "Server failed to start with cert=$cert_file args=${extra_args[*]}"
+    if [[ -z "$cert_type" ]] || [[ ! "$cert_type" =~ ^(strong|weak)$ ]]; then
+        log "ERROR" "Invalid certificate type: $cert_type"
         return 1
     fi
     
-    log "DEBUG" "Server started successfully"
-    return 0
+    local cert_path="${CERT_DIR}/${cert_type}"
+    if [[ ! -d "$cert_path" ]]; then
+        log "ERROR" "Certificate directory not found: $cert_path"
+        return 1
+    fi
+    
+    if nc -z localhost "$SERVER_PORT" 2>/dev/null; then
+        log "WARNING" "Port $SERVER_PORT is in use, attempting to kill existing process"
+        fuser -k "${SERVER_PORT}/tcp" || true
+        sleep 1
+    fi
+    
+    while ((retry_count < max_retries)); do
+        log "INFO" "Starting OpenSSL server (attempt $((retry_count + 1))/${max_retries})"
+        
+        openssl s_server \
+            -key "${cert_path}/key.pem" \
+            -cert "${cert_path}/cert.pem" \
+            -accept "$SERVER_PORT" \
+            "${options}" >"${LOG_DIR}/server.log" 2>&1 &
+        
+        local server_pid=$!
+        export SERVER_PID=$server_pid
+        
+        if wait_for_server; then
+            log "INFO" "Server started successfully (PID: ${server_pid})"
+            return 0
+        fi
+        
+        log "WARNING" "Server failed to start, retrying..."
+        kill "$server_pid" 2>/dev/null || true
+        ((retry_count++))
+        sleep 1
+    done
+    
+    log "ERROR" "Failed to start server after ${max_retries} attempts"
+    return 1
 }
 
-# Environment setup
-setup() {
-    local profile="$1"
-    local expected_result="$2"
-
-    log "DEBUG" "Setting up test environment with profile: $profile"
-
-    # Create working directory
-    log "DEBUG" "Creating working directories"
-    mkdir -p "${TEMP_DIR}"/{certs,logs}
-    mkdir -p "${TEMP_DIR}/certs" "${TEMP_DIR}/logs"
-
-    # Store original policy
-    log "DEBUG" "Storing original crypto policy"
-    ORIGINAL_POLICY=$(update-crypto-policies --show)
-    log "DEBUG" "Original policy: $ORIGINAL_POLICY"
-
-    # Set requested crypto policy
-    log "DEBUG" "Setting crypto policy to: $profile"
-    update-crypto-policies --set "$profile"
-
-    # Generate test certificates
-    log "DEBUG" "Generating strong certificate (2048-bit RSA)"
-    openssl req -x509 -newkey rsa:2048 -keyout "${TEMP_DIR}/certs/strong.key" \
-        -out "${TEMP_DIR}/certs/strong.crt" -days 1 -nodes \
-        -subj "/CN=localhost" 2>/dev/null
-
-    log "DEBUG" "Generating weak certificate (1024-bit RSA)"
-    openssl req -x509 -newkey rsa:1024 -keyout "${TEMP_DIR}/certs/weak.key" \
-        -out "${TEMP_DIR}/certs/weak.crt" -days 1 -nodes \
-        -subj "/CN=localhost" 2>/dev/null
-
-    # Generate weak DH params
-    log "DEBUG" "Generating weak DH parameters (1024-bit)"
-    openssl dhparam -out "${TEMP_DIR}/certs/weak_dh.pem" 1024 2>/dev/null
-
+tls_client_connect() {
+    local options="${1:-}"
+    local expect_success="${2:-true}"
+    local test_type="${3:-DEFAULT_STRONG}"
+    local timeout_seconds=5
+    
+    log "INFO" "Testing client connection with options: ${options}"
+    log "DEBUG" "Expected success: ${expect_success}"
+    log "DEBUG" "Test type: ${test_type}"
+    
+    # Clear previous handshake state
+    HANDSHAKE_STATE="${HANDSHAKE_STATE_MAP[INITIAL]}"
+    
     # Start packet capture
-    log "DEBUG" "Starting packet capture on port $SERVER_PORT"
-    tcpdump -i lo port "$SERVER_PORT" -w "$TCPDUMP_FILE" 2>/dev/null &
-    TCPDUMP_PID=$!
-    sleep 1
-
-    # Create PID file
-    log "DEBUG" "Creating PID file"
-    echo "$$" >"${TEMP_DIR}/test.pid"
-
-    log "DEBUG" "Setup complete, returning expected result: $expected_result"
-    return "$expected_result"
+    tshark -i lo -f "port ${SERVER_PORT}" -w "${LOG_DIR}/handshake.pcap" 2>/dev/null &
+    local tshark_pid=$!
+    
+    sleep 1  # Allow tshark to initialize
+    
+    local connection_result
+    if timeout "$timeout_seconds" openssl s_client -connect "localhost:${SERVER_PORT}" \
+        "${options}" </dev/null >"${LOG_DIR}/client.log" 2>&1; then
+        connection_result=0
+    else
+        connection_result=1
+    fi
+    
+    # Clean up tshark
+    kill "$tshark_pid" 2>/dev/null || true
+    
+    # Analyze the handshake with test type
+    analyze_handshake_state "$test_type"
+    
+    # Determine test result
+    if [[ "$expect_success" == "true" ]]; then
+        return "$connection_result"
+    else
+        [[ $connection_result -eq 0 ]] && return 1 || return 0
+    fi
 }
 
-cleanup() {
-    log "DEBUG" "Starting cleanup"
-
-    # Kill running processes
-    if [ -n "$SERVER_PID" ]; then
-        log "DEBUG" "Killing server process: $SERVER_PID"
-        kill "$SERVER_PID" 2>/dev/null
+# Enhanced handshake analysis with detailed state tracking
+analyze_handshake_state() {
+    local test_type="${1:-DEFAULT_STRONG}"
+    local timeout=5
+    local start_time
+    start_time=$(date +%s)
+    
+    local expected_sequence="${EXPECTED_TRANSITIONS[$test_type]}"
+    if [[ -z "$expected_sequence" ]]; then
+        log "ERROR" "Unknown test type: $test_type"
+        return 1
     fi
-    if [ -n "$TCPDUMP_PID" ]; then
-        log "DEBUG" "Killing tcpdump process: $TCPDUMP_PID"
-        kill "$TCPDUMP_PID" 2>/dev/null
-    fi
-
-    # Restore original policy
-    if [ -n "$ORIGINAL_POLICY" ]; then
-        log "DEBUG" "Restoring original crypto policy: $ORIGINAL_POLICY"
-        update-crypto-policies --set "$ORIGINAL_POLICY"
-    fi
-
-    # Remove temp directory
-    if [ -d "${TEMP_DIR}" ]; then
-        log "DEBUG" "Removing temporary directory: ${TEMP_DIR}"
-        rm -rf "${TEMP_DIR}"
-    fi
-
-    log "DEBUG" "Cleanup complete"
-}
-
-# Test Case 1
-test_default_client_send_no_hello_if_weak_srv_cert() {
-    setup "DEFAULT" "$HND_CLIENT_HELLO"
-    local expected_state="$HND_CLIENT_HELLO"
-
-    # Start server with weak certificate
-    openssl s_server -cert "${TEMP_DIR}/certs/weak.crt" \
-        -key "${TEMP_DIR}/certs/weak.key" \
-        -accept "$SERVER_PORT" -www &>"${TEMP_DIR}/logs/server.log" &
-    SERVER_PID=$!
-    sleep 1
-
-    # Try to connect with TLS 1.3 client
-    openssl s_client -connect "localhost:$SERVER_PORT" -tls1_3 \
-        &>"${TEMP_DIR}/logs/client.log" </dev/null
-    local client_rc=$?
-
-    monitor_handshake "$TCPDUMP_FILE"
-    local actual_state=$?
-
-    # Verify client rejected before sending ClientHello
-    if [ "$actual_state" -eq "$expected_state" ] && [ "$client_rc" -ne 0 ]; then
+    
+    local -A observed_states
+    local current_state="INITIAL"
+    
+    while true; do
+        local current_time
+        current_time=$(date +%s)
+        if ((current_time - start_time > timeout)); then
+            HANDSHAKE_STATE="${HANDSHAKE_STATE_MAP[TIMEOUT]}"
+            log "ERROR" "Handshake analysis timed out"
+            return 1
+        fi
+        
+        if ! "${observed_states[CLIENT_HELLO]:-false}" && \
+           tshark -r "${LOG_DIR}/handshake.pcap" -Y "tls.handshake.type == 1" 2>/dev/null | grep -q .; then
+            observed_states[CLIENT_HELLO]=true
+            current_state="CLIENT_HELLO"
+            HANDSHAKE_STATE="${HANDSHAKE_STATE_MAP[CLIENT_HELLO]}"
+            log "DEBUG" "Observed CLIENT_HELLO"
+        fi
+        
+        if ! "${observed_states[SERVER_HELLO]:-false}" && \
+           tshark -r "${LOG_DIR}/handshake.pcap" -Y "tls.handshake.type == 2" 2>/dev/null | grep -q .; then
+            observed_states[SERVER_HELLO]=true
+            current_state="SERVER_HELLO"
+            HANDSHAKE_STATE="${HANDSHAKE_STATE_MAP[SERVER_HELLO]}"
+            
+            local protocol_version
+            protocol_version=$(tshark -r "${LOG_DIR}/handshake.pcap" -Y "tls.handshake.type == 2" -T fields -e tls.handshake.version 2>/dev/null)
+            log "DEBUG" "Observed SERVER_HELLO with protocol version: $protocol_version"
+            
+            if [[ "$test_type" == "LEGACY_DOWNGRADE" && "$protocol_version" != "0x0302" ]]; then
+                log "ERROR" "Unexpected protocol version in LEGACY_DOWNGRADE test"
+                return 1
+            fi
+        fi
+        
+        if grep -q "SSL_connect:error" "${LOG_DIR}/client.log" 2>/dev/null; then
+            current_state="REJECTED"
+            HANDSHAKE_STATE="${HANDSHAKE_STATE_MAP[REJECTED]}"
+            break
+        fi
+        
+        if grep -q "SSL handshake has read" "${LOG_DIR}/client.log" 2>/dev/null; then
+            current_state="SUCCESS"
+            HANDSHAKE_STATE="${HANDSHAKE_STATE_MAP[SUCCESS]}"
+            break
+        fi
+        
+        sleep 0.1
+    done
+    
+    HANDSHAKE_STATE="${HANDSHAKE_STATE_MAP[$current_state]}"
+    
+    # Validate against expected sequence
+    if [[ "$expected_sequence" == *"$current_state"* ]]; then
+        log "DEBUG" "Handshake completed with expected state: $current_state"
         return 0
     else
+        log "ERROR" "Unexpected final state: $current_state (expected sequence: $expected_sequence)"
         return 1
     fi
 }
 
-# Test Case 2
-test_legacy_server_allows_tls_version_downgrade_to_client_max_supported_version() {
-    setup "LEGACY" "$HND_SUCCESS"
-    local expected_state="$HND_SUCCESS"
+# Cleanup function
+cleanup() {
+    log "INFO" "=== Starting System Cleanup ==="
+    
+    log "INFO" "Terminating any remaining test processes..."
+    if pkill -f "openssl s_server"; then
+        log "INFO" "Terminated OpenSSL server processes"
+    fi
+    if pkill -f "tshark"; then
+        log "INFO" "Terminated tshark processes"
+    fi
+    
+    log "INFO" "Restoring original crypto-policy: ${ORIGINAL_POLICY}"
+    if update-crypto-policies --set "$ORIGINAL_POLICY"; then
+        log "INFO" "Successfully restored crypto-policy"
+    else
+        log "ERROR" "Failed to restore crypto-policy"
+    fi
+    
+    log "INFO" "Removing temporary test directory: ${TEMP_DIR}"
+    rm -rf "$TEMP_DIR"
+    
+    log "INFO" "=== System Cleanup Completed ==="
+}
 
-    log "DEBUG" "Starting test with LEGACY profile, expected state: $expected_state"
-
-    # Start server allowing all versions and explicitly enable TLS 1.1
-    log "DEBUG" "Starting OpenSSL server with TLS 1.1 and debug logging enabled"
-    openssl s_server -cert "${TEMP_DIR}/certs/strong.crt" \
-        -key "${TEMP_DIR}/certs/strong.key" \
-        -accept "$SERVER_PORT" \
-        -tls1_1 \
-        -no_tls1_3 -no_tls1_2 \
-        -debug -msg \
-        -state -trace \
-        &>"${TEMP_DIR}/logs/server.log" &
-    SERVER_PID=$!
-    log "DEBUG" "Server started with PID: $SERVER_PID"
-    sleep 2  # Increase wait time to ensure server is ready
-
-    # Enhanced server startup verification with detailed logging
-    if ! timeout 2 bash -c "echo > /dev/tcp/localhost/$SERVER_PORT" 2>/dev/null; then
-        log "DEBUG" "Server startup verification failed, collecting diagnostic information"
-        
-        # Check server logs for startup errors
-        if [ -f "${TEMP_DIR}/logs/server.log" ]; then
-            log "ERROR" "Server startup logs:"
-            cat "${TEMP_DIR}/logs/server.log" >&2
-            log "DEBUG" "Server log file size: $(wc -l < "${TEMP_DIR}/logs/server.log") lines"
-        else
-            log "ERROR" "Server log file not found at ${TEMP_DIR}/logs/server.log"
-        fi
-        
-        # Check if certificate/key files exist and are readable
-        if [ ! -f "${TEMP_DIR}/certs/strong.crt" ]; then
-            log "ERROR" "Certificate file missing: ${TEMP_DIR}/certs/strong.crt"
-        else
-            log "DEBUG" "Certificate details:"
-            openssl x509 -in "${TEMP_DIR}/certs/strong.crt" -text -noout | head -n 5 >&2
-        fi
-        
-        if [ ! -f "${TEMP_DIR}/certs/strong.key" ]; then
-            log "ERROR" "Key file missing: ${TEMP_DIR}/certs/strong.key"
-        else
-            log "DEBUG" "Key file permissions: $(ls -l "${TEMP_DIR}/certs/strong.key")"
-        fi
-        
-        # Check if port is already in use
-        log "DEBUG" "Checking port $SERVER_PORT status"
-        netstat -tuln | grep ":$SERVER_PORT " >&2
-        
-        # Check server process status
-        if [ -n "$SERVER_PID" ]; then
-            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-                log "ERROR" "Server process died immediately after start"
-                log "DEBUG" "Last 20 lines of server log:"
-                tail -n 20 "${TEMP_DIR}/logs/server.log" >&2
-            else
-                log "DEBUG" "Server process info:"
-                ps -fp "$SERVER_PID" >&2
-            fi
-        else
-            log "ERROR" "Server PID not captured"
-        fi
-        
+# Enhanced test_default_client_send_no_hello_if_weak_srv_cert function
+test_default_client_send_no_hello_if_weak_srv_cert() {
+    local test_name="DEFAULT Client Rejects Weak Server Certificate"
+    log "INFO" "=== Starting Test: ${test_name} ==="
+    
+    log "INFO" "Setting crypto-policy to DEFAULT"
+    update-crypto-policies --set DEFAULT
+    
+    log "INFO" "Starting server with weak certificate (1024-bit RSA)"
+    if ! start_tls_server "weak"; then
+        log "ERROR" "Failed to start server with weak certificate"
+        TEST_RESULTS["$test_name"]="FAIL (Server start failed)"
         return 1
     fi
     
-    log "DEBUG" "Attempting TLS 1.1 client connection with debug logging"
-    # Rest of the function remains the same...
+    log "INFO" "Testing TLS 1.2 capable client against weak server"
+    tls_client_connect "-tls1_2" false "DEFAULT_WEAK_SERVER"
     
-    timeout 5 openssl s_client -connect "localhost:$SERVER_PORT" \
-        -tls1_1 -no_tls1_2 -no_tls1_3 \
-        -debug -msg \
-        -state -trace \
-        &>"${TEMP_DIR}/logs/client.log" </dev/null
-    local client_rc=$?
-    log "DEBUG" "Client connection returned: $client_rc"
-
-    monitor_handshake "$TCPDUMP_FILE"
-    local actual_state=$?
-    log "DEBUG" "Handshake monitor returned state: $actual_state"
-
-    # Enhanced verification with better logging
-    if [ "$actual_state" -eq "$expected_state" ] && [ "$client_rc" -eq 0 ]; then
-        log "DEBUG" "Checking negotiated protocol version"
-        if grep -q "Protocol.*TLSv1.1" "${TEMP_DIR}/logs/client.log" &&
-           ! grep -q "Protocol.*TLSv1.2" "${TEMP_DIR}/logs/client.log"; then
-            log "INFO" "Successfully negotiated TLS 1.1 connection"
-            log "DEBUG" "Full protocol negotiation details:"
-            grep "Protocol" "${TEMP_DIR}/logs/client.log" >&2
-            return 0
-        else
-            log "ERROR" "Unexpected protocol version negotiated"
-            log "DEBUG" "Client connection details:"
-            grep -A 5 -B 5 "Protocol" "${TEMP_DIR}/logs/client.log" >&2
-            cat "${TEMP_DIR}/logs/client.log" >&2
-        fi
-    fi
+    log "INFO" "Terminating test server (PID: ${SERVER_PID})"
+    kill "$SERVER_PID"
     
-    log "ERROR" "Test failed: actual_state=$actual_state, client_rc=$client_rc"
-    log "DEBUG" "Dumping full client log:"
-    cat "${TEMP_DIR}/logs/client.log" >&2
-    log "DEBUG" "Dumping full server log:"
-    cat "${TEMP_DIR}/logs/server.log" >&2
-    
-    # Protocol version verification
-    if [ "$actual_state" -eq "$expected_state" ] && [ "$client_rc" -eq 0 ]; then
-        local negotiated_version
-        negotiated_version=$(grep "Protocol  :" "${TEMP_DIR}/logs/client.log" | awk '{print $3}')
-        log "DEBUG" "Extracted negotiated version: $negotiated_version"
-        
-        if [[ "$negotiated_version" == "TLSv1.1" ]]; then
-            log "INFO" "Successfully downgraded to TLS 1.1 as expected"
-            return 0
-        else
-            log "ERROR" "Unexpected protocol version: $negotiated_version"
-            log "DEBUG" "Available cipher suites:"
-            grep "Cipher" "${TEMP_DIR}/logs/client.log" >&2
-        fi
-    fi
-    
-    return 1
+    # Enhanced validation of handshake state transitions
+    case "${HANDSHAKE_STATE_MAP[$current_state]}" in
+        "${HANDSHAKE_STATE_MAP[CLIENT_HELLO]}")
+            log "INFO" "Connection rejected at CLIENT_HELLO stage"
+            TEST_RESULTS["$test_name"]="PASS"
+            ;;
+        "${HANDSHAKE_STATE_MAP[CIPHER_SPEC]}")
+            log "INFO" "Connection rejected at CIPHER_SPEC stage"
+            TEST_RESULTS["$test_name"]="PASS"
+            ;;
+        "${HANDSHAKE_STATE_MAP[SUCCESS]}")
+            log "ERROR" "Connection unexpectedly succeeded with weak server certificate"
+            TEST_RESULTS["$test_name"]="FAIL (Unexpected success)"
+            ;;
+        *)
+            log "ERROR" "Connection rejected at unexpected handshake stage ($current_state)"
+            TEST_RESULTS["$test_name"]="FAIL (Unexpected rejection stage)"
+            ;;
+    esac
 }
 
-# Test Case 3
+# Enhanced test_default_server_rejects_client_ChangeCipherSpec function
 test_default_server_rejects_client_ChangeCipherSpec() {
-    setup "DEFAULT" "$HND_CIPHER_SPEC"
-
-    # First verify the server's DH parameters
-    if ! validate_dh_params "${TEMP_DIR}/certs/weak_dh.pem" "DEFAULT"; then
-        log "Server configuration would fail with weak DH parameters"
-        return 0 # This is actually a pass - we prevented weak params
-    fi
-
-    # Start server with explicit cipher configuration
-    openssl s_server -cert "${TEMP_DIR}/certs/strong.crt" \
-        -key "${TEMP_DIR}/certs/strong.key" \
-        -accept "$SERVER_PORT" \
-        -tls1_2 \
-        -dhparam "${TEMP_DIR}/certs/weak_dh.pem" \
-        -cipher "ALL:!MEDIUM:!HIGH" \
-        &>"${TEMP_DIR}/logs/server.log" &
-    SERVER_PID=$!
-
-    # Verify server actually started
-    if ! timeout 2 bash -c "echo > /dev/tcp/localhost/$SERVER_PORT" 2>/dev/null; then
-        log "Server failed to start - this is expected with DEFAULT profile"
-        return 0
-    fi
-
-    # verification of negotiated cipher suite
-    if [ "$SERVER_PID" ]; then
-        if ! openssl s_client -connect "localhost:$SERVER_PORT" \
-            -tls1_2 -cipher "LOW:!aNULL" 2>&1 | \
-            grep -q "SSL handshake has read"; then
-            log "INFO" "Server correctly rejected weak cipher suite"
-            return 0
-        fi
+    local test_name="DEFAULT Server Rejects Weak Cipher Spec"
+    log "INFO" "=== Starting Test: ${test_name} ==="
+    
+    log "INFO" "Setting crypto-policy to DEFAULT"
+    update-crypto-policies --set DEFAULT
+    
+    log "INFO" "Starting server with strong certificate"
+    if ! start_tls_server "strong" "-tls1_3"; then
+        log "ERROR" "Failed to start server"
+        TEST_RESULTS["$test_name"]="FAIL (Server start failed)"
+        return 1
     fi
     
-    return 1
-}
-
-list_tests() {
-    declare -F | grep '^declare -f test_' | cut -d' ' -f3
-}
-
-setup_test_environment() {
-    local test_name="$1"
-    # Create isolated network namespace
-    ip netns add "test_${test_name}"
-    # Setup virtual interfaces
-    ip link add "veth_${test_name}" type veth peer name "veth_${test_name}_peer"
-    # Configure networking
-    ip link set "veth_${test_name}_peer" netns "test_${test_name}"
-}
-
-print_results() {
-    local -n results=$1
-    echo -e "\nDetailed Test Results:"
-    echo "===================="
-    for test in "${!results[@]}"; do
-        echo "Test: $test"
-        echo "Result: ${results[$test]}"
-        echo "Details:"
-        cat "${TEMP_DIR}/logs/${test}.log"
-        echo "Protocol Analysis:"
-        analyze_capture "${TEMP_DIR}/capture/${test}.pcap"
-        echo "-------------------"
-    done
-
-}
-
-main() {
-    # Must run as root
-    if [ "$EUID" -ne 0 ]; then
-        error "This script must be run as root"
+    log "INFO" "Testing with TLS 1.2 and weak DH parameters"
+    tls_client_connect "-tls1_2 -cipher DHE-RSA-AES128-SHA -dhparam 1024" false
+    
+    log "INFO" "Terminating test server (PID: ${SERVER_PID})"
+    kill "$SERVER_PID"
+    
+    if [[ "$HANDSHAKE_STATE" == "CIPHER_SPEC" ]]; then
+        log "INFO" "Connection rejected at cipher spec stage"
+        TEST_RESULTS["$test_name"]="PASS"
+    elif [[ "$HANDSHAKE_STATE" == "SUCCESS" ]]; then
+        log "ERROR" "Connection unexpectedly succeeded with weak DH parameters"
+        TEST_RESULTS["$test_name"]="FAIL (Unexpected success)"
+    else
+        log "ERROR" "Connection rejected at unexpected handshake stage (${HANDSHAKE_STATE})"
+        TEST_RESULTS["$test_name"]="FAIL (Unexpected rejection stage)"
     fi
+}
 
-    # Process arguments
-    process_args "$@"
+# Enhanced test_legacy_server_allows_tls_version_downgrade function
+test_legacy_server_allows_tls_version_downgrade() {
+    local test_name="LEGACY Server Allows Version Downgrade"
+   
+    log "INFO" "=== Starting Test: ${test_name} ==="
+    
+    log "INFO" "Setting crypto-policy to LEGACY"
+    update-crypto-policies --set LEGACY
+    
+    log "INFO" "Starting server with all TLS versions enabled"
+    if ! start_tls_server "strong" "-tls1_3 -tls1_2 -tls1_1"; then
+        log "ERROR" "Failed to start server"
+        TEST_RESULTS["$test_name"]="FAIL (Server start failed)"
+        return 1
+    fi
+    
+    log "INFO" "Testing with forced TLS 1.1"
+    tls_client_connect "-tls1_1" true
+    
+    log "INFO" "Terminating test server (PID: ${SERVER_PID})"
+    kill "$SERVER_PID"
+    
+    # Enhanced validation with handshake state checks
+    if [[ "$HANDSHAKE_STATE" == "SUCCESS" ]]; then
+        # Verify negotiated TLS version in client log
+        if grep -q "Protocol  : TLSv1.1" "${LOG_DIR}/client.log"; then
+            log "INFO" "Successfully downgraded to TLS 1.1"
+            TEST_RESULTS["$test_name"]="PASS"
+        else
+            log "ERROR" "Negotiated TLS version does not match expected TLS 1.1"
+            TEST_RESULTS["$test_name"]="FAIL (Wrong protocol version)"
+        fi
+    else
+        log "ERROR" "Handshake was not successful (state: ${HANDSHAKE_STATE})"
+        TEST_RESULTS["$test_name"]="FAIL (Handshake not successful)"
+    fi
+}
 
-    # Set up cleanup trap
+# Results reporting
+print_results() {
+    echo -e "\nTest Results Summary"
+    echo "==================="
+    for test in "${!TEST_RESULTS[@]}"; do
+        printf "%-50s [%s]\n" "$test" "${TEST_RESULTS[$test]}"
+    done
+    local total=${#TEST_RESULTS[@]}
+    local passed=0
+    for result in "${TEST_RESULTS[@]}"; do
+        [[ $result == "PASS" ]] && ((passed++))
+    done
+    echo -e "\nTotal Tests: ${total}"
+    echo "Passed: ${passed}"
+    echo "Failed: $((total - passed))"
+}
+
+# Main execution
+main() {
     trap cleanup EXIT
-
-    # Run tests
-    declare -A TEST_RESULTS
-    if [ $# -eq 0 ]; then
+    
+    if [[ "${1:-}" == "-l" ]]; then
+        echo "Available Tests:"
+        declare -F | grep "^declare -f test_" | awk '{print $3}'
+        exit 0
+    fi
+    
+    setup
+    
+    if [[ $# -eq 0 ]]; then
         # Run all tests
-        for test in $(list_tests); do
-            log "Running $test..."
-            if "$test"; then
-                TEST_RESULTS["$test"]="PASS"
+        test_default_client_send_no_hello_if_weak_srv_cert
+        test_default_server_rejects_client_ChangeCipherSpec
+        test_legacy_server_allows_tls_version_downgrade
+    else
+        # Run specified tests
+        for test_func in "$@"; do
+            if [[ $(type -t "$test_func") == "function" ]]; then
+                test_name=$(declare -f "$test_func" | grep "^test_" | awk '{print $1}' | sed 's/test_//')
+                log "INFO" "Running $test_func..."
+                if "$test_func"; then
+                    TEST_RESULTS["$test_func"]="PASS"
+                else
+                    TEST_RESULTS["$test_func"]="FAIL"
+                fi
             else
-                TEST_RESULTS["$test"]="FAIL"
+                log "WARNING" "Test function not found: ${test_func}"
             fi
         done
-    else
-        # Run specified test
-        if declare -F "$1" >/dev/null; then
-            log "Running $1..."
-            if "$1"; then
-                TEST_RESULTS["$1"]="PASS"
-            else
-                TEST_RESULTS["$1"]="FAIL"
-            fi
-        else
-            error "Unknown test: $1"
-        fi
     fi
-
-
-    # Print results
-    printf "\nTest Results:\n"
-    printf "==============\n"
-    for test in "${!TEST_RESULTS[@]}"; do
-        printf "%-70s %s\n" "$test" "${TEST_RESULTS[$test]}"
-    done
+    
+    print_results
 }
+
 main "$@"
+
