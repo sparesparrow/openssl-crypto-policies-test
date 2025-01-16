@@ -28,6 +28,12 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Create runner user
+      run: |
+        useradd -m -s /bin/bash runner
+        echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/runner
+        chmod 0440 /etc/sudoers.d/runner
+
     - name: Install dependencies
       run: |
         dnf update -y
@@ -67,8 +73,8 @@ jobs:
 
     - name: Run tests
       run: |
-        ./test.sh -l
-        ./test.sh
+        sudo ./test.sh -l
+        sudo ./test.sh
       env:
         TEMP_DIR: /tmp/test-results
       continue-on-error: false

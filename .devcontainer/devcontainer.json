@@ -4,7 +4,7 @@
     "features": {
         "ghcr.io/devcontainers/features/common-utils:2": {
             "installZsh": false,
-            "username": "vscode",
+            "username": "none",
             "upgradePackages": true,
             "nonFreePackages": true
         },
@@ -64,7 +64,8 @@
         "--cap-add=SYS_PTRACE",
         "--security-opt",
         "seccomp=unconfined",
-        "--network=host"
+        "--network=host",
+        "--group-add=sudo"
     ],
     "mounts": [
         "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached"
@@ -72,9 +73,10 @@
     "initializeCommand": "mkdir -p \"${localWorkspaceFolder}/.devcontainer/logs\" && ls -la \"${localWorkspaceFolder}/.devcontainer/logs\"",
     "postCreateCommand": [
         "set -x",
-        "dnf update -y",
-        "dnf install -y openssl openssl-devel tcpdump net-tools wireshark-cli ShellCheck crypto-policies-scripts gnutls-utils git nc procps-ng psmisc iproute bind-utils lsof strace bats tree jq vim",
-        "chown -R vscode:vscode /workspace",
+        "sudo chown vscode:vscode /workspace",
+        "sudo dnf update -y",
+        "sudo dnf install -y openssl openssl-devel tcpdump net-tools wireshark-cli ShellCheck crypto-policies-scripts gnutls-utils git nc procps-ng psmisc iproute bind-utils lsof strace bats tree jq vim",
+        "sudo chown -R vscode:vscode /workspace",
         "echo 'Dependencies installed successfully' >> /workspace/.devcontainer/logs/startup.log"
     ],
     "build": {
