@@ -80,7 +80,7 @@
         "echo 'Dependencies installed successfully' >> /workspace/.devcontainer/logs/startup.log"
     ],
     "build": {
-        "dockerfile": "Dockerfile"
+        "dockerfile": "../Dockerfile"
     },
     "remoteUser": "vscode",
     "workspaceFolder": "/workspace",
