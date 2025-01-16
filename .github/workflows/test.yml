@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: fedora:41
-      options: --privileged --cap-add=SYS_PTRACE --security-opt seccomp=unconfined
+      options: --privileged
 
     steps:
     - uses: actions/checkout@v4

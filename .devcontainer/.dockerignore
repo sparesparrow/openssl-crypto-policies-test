@@ -2,4 +2,4 @@
 .gitignore
 .devcontainer/logs
 **/node_modules
-**/dist 
+**/dist
