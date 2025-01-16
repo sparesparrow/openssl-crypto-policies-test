@@ -1,0 +1,5 @@
+.git
+.gitignore
+.devcontainer/logs
+**/node_modules
+**/dist 

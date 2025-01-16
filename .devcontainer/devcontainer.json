@@ -13,9 +13,6 @@
         },
         "ghcr.io/lukewiwa/features/shellcheck:0": {
             "version": "stable"
-        },
-        "ghcr.io/edouard-lopez/devcontainer-features/bats:0": {
-            "version": "latest"
         }
     },
     "customizations": {
@@ -79,7 +76,9 @@
         "chown -R vscode:vscode /workspace",
         "echo 'Dependencies installed successfully' >> /workspace/.devcontainer/logs/startup.log"
     ],
-    "postStartCommand": "echo 'DevContainer started successfully' > /workspace/.devcontainer/logs/startup.log",
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
     "remoteUser": "vscode",
     "workspaceFolder": "/workspace",
     "remoteEnv": {
