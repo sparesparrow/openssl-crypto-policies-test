@@ -20,12 +20,6 @@ ORIGINAL_POLICY=
 declare -A TEST_RESULTS
 declare -i HANDSHAKE_STATE=0
 
-export CLIENT_WEAK_TLS_VERSION=false
-export CLIENT_WEAK_CIPHERSPEC=false
-export SERVER_WEAK_TLS_VERSION=false
-export SERVER_WEAK_CERT=false
-export LEGACY_CRYPTO_POLICY=false
-
 export CRYPTO_POLICY_DEFAULT="DEFAULT"
 export CRYPTO_POLICY_LEGACY="LEGACY"
 export LATEST_TLS_VERSION="-tls1_3"
@@ -79,17 +73,14 @@ EOF
 }
 
 
-# Logging functions - Fixed SC2155 warning
 log() {
     local level=$1
     shift
     local message
     message="[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $*"
     
-    # Always print to stdout
     echo "$message"
     
-    # Only write to log file if LOG_DIR is set and directory exists
     if [[ -n "${LOG_DIR:-}" ]] && [[ -d "$LOG_DIR" ]]; then
         echo "$message" >> "${LOG_DIR}/test.log"
     fi
@@ -101,7 +92,6 @@ error() {
     exit 1
 }
 
-# Setup function - Updated to properly initialize directories
 setup() {
     log "INFO" "=== Starting Test Environment Setup ==="
     
@@ -116,7 +106,6 @@ setup() {
     fi
     log "INFO" "Root privileges validated"
     
-    # Initialize directories with proper error handling
     TEMP_DIR=$(mktemp -d) || error "Failed to create temporary directory"
     readonly TEMP_DIR
     
@@ -144,7 +133,6 @@ setup() {
     log "INFO" "=== Test Environment Setup Completed ==="
 }
 
-# Certificate generation
 generate_crt() {
     local cert_type=$1
     
@@ -225,6 +213,8 @@ start_tls_server() {
             -key "${cert_path}/key.pem" \
             -cert "${cert_path}/cert.pem" \
             -accept "$SERVER_PORT" \
+            -tlsextdebug \
+            -state \
             "${options}" >"${LOG_DIR}/server.log" 2>&1 &
         
         local server_pid=$!
@@ -265,17 +255,15 @@ tls_client_connect() {
     sleep 1  # Allow tshark to initialize
     
     local connection_result
-    if timeout "$timeout_seconds" openssl s_client -connect "localhost:${SERVER_PORT}" \
+    if timeout "$timeout_seconds" openssl s_client -tlsextdebug -state -connect "localhost:${SERVER_PORT}" \
         "${options}" </dev/null >"${LOG_DIR}/client.log" 2>&1; then
         connection_result=0
     else
         connection_result=1
     fi
     
-    # Clean up tshark
     kill "$tshark_pid" 2>/dev/null || true
     
-    # Analyze the handshake with test type
     analyze_handshake_state "$test_type"
     
     # Determine test result
@@ -286,7 +274,6 @@ tls_client_connect() {
     fi
 }
 
-# Enhanced handshake analysis with detailed state tracking
 analyze_handshake_state() {
     local test_type="${1:-DEFAULT_STRONG}"
     local timeout=5
@@ -362,7 +349,6 @@ analyze_handshake_state() {
     fi
 }
 
-# Cleanup function
 cleanup() {
     log "INFO" "=== Starting System Cleanup ==="
     
@@ -387,7 +373,6 @@ cleanup() {
     log "INFO" "=== System Cleanup Completed ==="
 }
 
-# Enhanced test_default_client_send_no_hello_if_weak_srv_cert function
 test_default_client_send_no_hello_if_weak_srv_cert() {
     local test_name="DEFAULT Client Rejects Weak Server Certificate"
     log "INFO" "=== Starting Test: ${test_name} ==="
@@ -429,7 +414,6 @@ test_default_client_send_no_hello_if_weak_srv_cert() {
     esac
 }
 
-# Enhanced test_default_server_rejects_client_ChangeCipherSpec function
 test_default_server_rejects_client_ChangeCipherSpec() {
     local test_name="DEFAULT Server Rejects Weak Cipher Spec"
     log "INFO" "=== Starting Test: ${test_name} ==="
@@ -462,7 +446,6 @@ test_default_server_rejects_client_ChangeCipherSpec() {
     fi
 }
 
-# Enhanced test_legacy_server_allows_tls_version_downgrade function
 test_legacy_server_allows_tls_version_downgrade() {
     local test_name="LEGACY Server Allows Version Downgrade"
    
@@ -484,7 +467,6 @@ test_legacy_server_allows_tls_version_downgrade() {
     log "INFO" "Terminating test server (PID: ${SERVER_PID})"
     kill "$SERVER_PID"
     
-    # Enhanced validation with handshake state checks
     if [[ "$HANDSHAKE_STATE" == "SUCCESS" ]]; then
         # Verify negotiated TLS version in client log
         if grep -q "Protocol  : TLSv1.1" "${LOG_DIR}/client.log"; then
@@ -500,7 +482,6 @@ test_legacy_server_allows_tls_version_downgrade() {
     fi
 }
 
-# Results reporting
 print_results() {
     echo -e "\nTest Results Summary"
     echo "==================="
@@ -517,7 +498,6 @@ print_results() {
     echo "Failed: $((total - passed))"
 }
 
-# Main execution
 main() {
     trap cleanup EXIT
     
@@ -530,12 +510,10 @@ main() {
     setup
     
     if [[ $# -eq 0 ]]; then
-        # Run all tests
         test_default_client_send_no_hello_if_weak_srv_cert
         test_default_server_rejects_client_ChangeCipherSpec
         test_legacy_server_allows_tls_version_downgrade
     else
-        # Run specified tests
         for test_func in "$@"; do
             if [[ $(type -t "$test_func") == "function" ]]; then
                 test_name=$(declare -f "$test_func" | grep "^test_" | awk '{print $1}' | sed 's/test_//')
@@ -555,4 +533,3 @@ main() {
 }
 
 main "$@"
-

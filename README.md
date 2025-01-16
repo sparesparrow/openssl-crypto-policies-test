@@ -43,14 +43,7 @@ The tests will be assigned a self-descriptive name, refering to specific edge ca
 #### **`setup()`** and **`cleanup()`**
 - There will be a generic setup logic that applies to all tests. Each test additionally defines own requirements for the setup, particularly by passing arguments to the `setup()` function.
   - After test execution, the `cleanup()` function shall reset these flags to their defaults (false). 
-- There are following supported configurables that can be passed to the `setup()` function:
-```bash
-$CLIENT_WEAK_TLS_VERSION
-$CLIENT_WEAK_CIPHERSPEC
-$SERVER_WEAK_TLS_VERSION
-$SERVER_WEAK_CERT
-$LEGACY_CRYPTO_POLICY
-```
+
 ---
 
 ## Approach 
@@ -86,7 +79,7 @@ A "weak" server certificate is characterized by:
 
 1. **Packet Analysis:**
   * Capture TLS Handshake - tcpdump
-    - `tcpdump -i lo "tcp port 4433 and tcp[((tcp[12:1] & 0xf0) >> 2):1] = 0x16"`
+    - `tshark -i lo -f "port ${SERVER_PORT}" -w "${LOG_DIR}/handshake.pcap"`
       - ClientHello message structure
       - ServerHello response
       - Certificate exchange
