@@ -201,9 +201,8 @@ start_tls_server() {
     fi
     
     if nc -z localhost "$SERVER_PORT" 2>/dev/null; then
-        log "WARNING" "Port $SERVER_PORT is in use, attempting to kill existing process"
-        fuser -k "${SERVER_PORT}/tcp" || true
-        sleep 1
+        log "ERROR" "Port $SERVER_PORT is still in use after attempting to kill processes."
+        return 1
     fi
     
     while ((retry_count < max_retries)); do
@@ -394,6 +393,14 @@ test_default_client_send_no_hello_if_weak_srv_cert() {
     kill "$SERVER_PID"
     
     # Enhanced validation of handshake state transitions
+    local current_state
+    current_state="$(for key in "${!HANDSHAKE_STATE_MAP[@]}"; do
+        if [[ "${HANDSHAKE_STATE_MAP[$key]}" -eq "$HANDSHAKE_STATE" ]]; then
+            echo "$key"
+            break
+        fi
+    done)"
+    
     case "${HANDSHAKE_STATE_MAP[$current_state]}" in
         "${HANDSHAKE_STATE_MAP[CLIENT_HELLO]}")
             log "INFO" "Connection rejected at CLIENT_HELLO stage"

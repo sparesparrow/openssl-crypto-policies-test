@@ -71,11 +71,13 @@
     "mounts": [
         "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached"
     ],
-    "initializeCommand": "mkdir -p \"${localWorkspaceFolder}/.devcontainer/logs\"",
+    "initializeCommand": "mkdir -p \"${localWorkspaceFolder}/.devcontainer/logs\" && ls -la \"${localWorkspaceFolder}/.devcontainer/logs\"",
     "postCreateCommand": [
+        "set -x",
         "dnf update -y",
         "dnf install -y openssl openssl-devel tcpdump net-tools wireshark-cli ShellCheck crypto-policies-scripts gnutls-utils git nc procps-ng psmisc iproute bind-utils lsof strace bats tree jq vim",
-        "chown -R vscode:vscode /workspace"
+        "chown -R vscode:vscode /workspace",
+        "echo 'Dependencies installed successfully' >> /workspace/.devcontainer/logs/startup.log"
     ],
     "postStartCommand": "echo 'DevContainer started successfully' > /workspace/.devcontainer/logs/startup.log",
     "remoteUser": "vscode",

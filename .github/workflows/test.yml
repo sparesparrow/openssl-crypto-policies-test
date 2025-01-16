@@ -41,11 +41,12 @@ jobs:
           crypto-policies-scripts \
           gnutls-utils \
           git \
-          nc
+          nc \
+          which
 
     - name: Verify system requirements
       run: |
-        grep -q "Fedora 41" /etc/fedora-release
+        grep -q "Fedora" /etc/fedora-release
         command -v openssl
         command -v tshark
         command -v update-crypto-policies
@@ -82,3 +83,6 @@ jobs:
 
     - name: Install BATS
       run: dnf install -y bats
+
+    - name: Debug Fedora Release
+      run: cat /etc/fedora-release
